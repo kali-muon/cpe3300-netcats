@@ -1,42 +1,33 @@
-#![deny(unsafe_code)]
-#![deny(warnings)]
-#![no_main]
 #![no_std]
+#![no_main]
+#![feature(type_alias_impl_trait)]
 
-use panic_halt as _;
+use defmt::*;
+use embassy_executor::Spawner;
+use embassy_stm32::{exti::ExtiInput, gpio::{Input, Level, Output, Pull, Speed}};
+use embassy_time::Timer;
+use embassy_futures::select::select;
+use embassy_futures::select::Either;
+use {defmt_rtt as _, panic_probe as _};
 
-#[rtic::app(device = stm32f4xx_hal::pac, peripherals = true)]
-mod app {
-    use stm32f4xx_hal::{
-        gpio::{gpioa::PA0, gpioc::PC13, Edge, Input, Output, PushPull},
-        prelude::*,
-    };
-    const SYSFREQ: u32 = 100_000_000;
-    // Shared resources go here
-    #[shared]
-    struct Shared {}
+enum LineCondition {
+    Idle,
+    Busy,
+    Collision,
+}
 
-    // Local resources go here
-    #[local]
-    struct Local {}
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    let p = embassy_stm32::init(Default::default());
 
-    #[init]
-    fn init(mut ctx: init::Context) -> (Shared, Local) {
-        (
-            Shared {
-               // Initialization of shared resources go here
-            },
-            Local {
-                // Initialization of local resources go here
-            },
-        )
-    }
+    let mut idle_led = Output::new(p.PB5, Level::Low, Speed::Low);
+    let mut busy_led = Output::new(p.PB6, Level::Low, Speed::Low);
+    let mut collision_led = Output::new(p.PB7, Level::Low, Speed::Low);
 
-    // Optional idle, can be removed if not needed.
-    #[idle]
-    fn idle(_: idle::Context) -> ! {
-        loop {
-            continue;
-        }
-    }
+    let rx_thing = Input::new(p.PC8, Pull::None);
+    let mut rx_pin = ExtiInput::new(rx_thing, p.EXTI8);
+
+    let mut line_state = LineCondition::Idle;
+
+    loop {}
 }
