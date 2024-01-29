@@ -25,8 +25,6 @@ enum LineCondition {
     Collision,
 }
 
-static LINE_STATE: Mutex<ThreadModeRawMutex, LineCondition> = Mutex::new(LineCondition::Idle);
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
@@ -40,55 +38,32 @@ async fn main(spawner: Spawner) {
 
     let mut onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
-    info!("about to spawn");
-    spawner.spawn(state_logic(p.PC13.degrade(), p.EXTI13.degrade())).unwrap();
-    info!("spawned!");
+    let button = Input::new(p.PC13, Pull::None);
+    let mut button = ExtiInput::new(button, p.EXTI13);
+
+    let mut line_state = LineCondition::Idle;
 
     loop {
-        let state = LINE_STATE.lock().await; 
-        match *state {
+        button.wait_for_rising_edge().await;
+        match line_state {
             LineCondition::Idle => {
+                line_state = LineCondition::Busy;
                 idle_led.set_high();
                 busy_led.set_low();
                 collision_led.set_low();
             },
             LineCondition::Busy => {
+                line_state = LineCondition::Collision;
                 idle_led.set_low();
                 busy_led.set_high();
                 collision_led.set_low();
             },
             LineCondition::Collision => {
+                line_state = LineCondition::Idle;
                 idle_led.set_low();
                 busy_led.set_low();
                 collision_led.set_high();
             },
         }
-        drop(state);
-        Timer::after_micros(500).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn state_logic(mut pin: AnyPin, exti: AnyChannel) {
-    let button = Input::new(pin, Pull::None);
-    let mut button = ExtiInput::new(button, exti);
-
-    info!("entering button loop");
-    loop {
-        button.wait_for_falling_edge().await;
-        info!("button pressed??????");
-        let mut state = LINE_STATE.lock().await;
-        match *state {
-            LineCondition::Idle => {
-                *state = LineCondition::Busy;
-            },
-            LineCondition::Busy => {
-                *state = LineCondition::Collision;
-            },
-            LineCondition::Collision => {
-                *state = LineCondition::Idle;
-            },
-        }
-        drop(state);
     }
 }
