@@ -42,21 +42,34 @@ async fn main(spawner: Spawner) {
     let mut button = ExtiInput::new(button, p.EXTI13);
 
     let mut line_state = LineCondition::Idle;
+    let mut last_line_level = rx_pin.get_level();
 
     loop {
         button.wait_for_rising_edge().await;
+        let new_line_level = rx_pin.get_level();
         match line_state {
             LineCondition::Idle => {
-                line_state = LineCondition::Busy;
                 idle_led.set_high();
                 busy_led.set_low();
                 collision_led.set_low();
+
+                line_state = match new_line_level {
+                    Level::Low => LineCondition::Busy,
+                    Level::High => LineCondition::Idle,
+                }
             },
             LineCondition::Busy => {
-                line_state = LineCondition::Collision;
                 idle_led.set_low();
                 busy_led.set_high();
-                collision_led.set_low();
+
+                line_state = match last_line_level {
+                    Level::Low => {
+                        match new_line_level {
+                            Level::Low => LineCondition::Collision,
+                            Level::High => LineCondition::Busy,
+                        }
+                    },
+                    Level::High => {},
             },
             LineCondition::Collision => {
                 line_state = LineCondition::Idle;
