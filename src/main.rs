@@ -24,7 +24,7 @@ mod app {
     }
 
     #[init]
-    fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(mut ctx: init::Context) -> (Shared, Local) {
         // syscfg
         let mut syscfg = ctx.device.SYSCFG.constrain();
         // clocks
@@ -50,7 +50,6 @@ mod app {
                 button,
                 led,
             },
-            init::Monotonics(),
         )
     }
 
