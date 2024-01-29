@@ -11,8 +11,9 @@
             "cwd": "${workspaceFolder}",
             "coreConfigs": [
                 {
+                    "programBinary": "target/thumbv7em-none-eabihf/debug/cpe3300-netcats",
                     "coreIndex": 0,
-                    "svdFile": "stm32f411.svd.patched",
+                    // "svdFile": "",
                     "rttEnabled": true,
                     "rttChannelFormats": [
                         {
