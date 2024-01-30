@@ -8,6 +8,7 @@ use embassy_futures::select::select;
 use embassy_futures::select::Either;
 use embassy_stm32::exti::AnyChannel;
 use embassy_stm32::exti::Channel;
+use embassy_stm32::gpio::low_level::Pin as LLPin;
 use embassy_stm32::gpio::AnyPin;
 use embassy_stm32::gpio::Pin;
 use embassy_stm32::{
@@ -26,7 +27,7 @@ enum LineCondition {
 }
 
 const BIT_PERIOD: u64 = 1000;
-const BIT_PERIOD_WITH_ERROR: u64 = 1130;
+const BIT_PERIOD_WITH_ERROR: u64 = 1110;
 const HALF_BIT_PERIOD: u64 = 500;
 const HALF_BIT_PERIOD_WITH_ERROR: u64 = 520;
 
@@ -35,14 +36,14 @@ const HALF_BIT_PERIOD_WITH_ERROR: u64 = 520;
 async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
 
-    let mut idle_led = Output::new(p.PB15, Level::Low, Speed::Low);
-    let mut busy_led = Output::new(p.PB14, Level::Low, Speed::Low);
-    let mut collision_led = Output::new(p.PB13, Level::Low, Speed::Low);
+    let mut idle_led = Output::new(p.PB15, Level::Low, Speed::Medium).degrade();
+    let mut busy_led = Output::new(p.PB14, Level::Low, Speed::Medium).degrade();
+    let mut collision_led = Output::new(p.PB13, Level::Low, Speed::Medium).degrade();
 
     let rx_pin = Input::new(p.PC8, Pull::None);
     let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
 
-    let mut onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
+    let mut onboard_led = Output::new(p.PA5, Level::Low, Speed::Medium);
 
     let button = Input::new(p.PC13, Pull::None);
     let mut button = ExtiInput::new(button, p.EXTI13);
@@ -50,9 +51,9 @@ async fn main(spawner: Spawner) {
     let mut line_state = LineCondition::Idle;
     let mut last_line_level = rx_pin.get_level();
 
-    info!("Waiting to enter loop...");
-    rx_pin.wait_for_any_edge().await;
-        println!("entering loop!");
+    // info!("Waiting to enter loop...");
+    // rx_pin.wait_for_any_edge().await;
+    println!("entering loop!");
     loop {
         match rx_pin.get_level() {
             Level::High=> {
@@ -61,9 +62,10 @@ async fn main(spawner: Spawner) {
                         // line has gone idle
                         println!("IDLE");
                         line_state = LineCondition::Idle;
-                        idle_led.set_high();
-                        busy_led.set_low();
-                        collision_led.set_low();
+                        set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
+                        // idle_led.set_high();
+                        // busy_led.set_low();
+                        // collision_led.set_low();
                         // wait for the line to fall before continuing
                         rx_pin.wait_for_falling_edge().await;
                     },
@@ -77,17 +79,19 @@ async fn main(spawner: Spawner) {
             Level::Low => {
                 println!("BUSY");
                 line_state = LineCondition::Busy;
-                idle_led.set_low();
-                busy_led.set_high();
-                collision_led.set_low();
+                set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
+                // idle_led.set_low();
+                // busy_led.set_high();
+                // collision_led.set_low();
                 match select(Timer::after_micros(BIT_PERIOD_WITH_ERROR), rx_pin.wait_for_rising_edge()).await {
                     Either::First(_) => {
                         // the collision timeout triggered
                         println!("COLLISION");
                         line_state = LineCondition::Collision;
-                        idle_led.set_low();
-                        busy_led.set_low();
-                        collision_led.set_high();
+                        set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
+                        // idle_led.set_low();
+                        // busy_led.set_low();
+                        // collision_led.set_high();
                         // wait for the line to exit the collision state
                         rx_pin.wait_for_rising_edge().await; // this will need a refactor to support the random backoffs later
                     },
@@ -99,5 +103,25 @@ async fn main(spawner: Spawner) {
                 }
             }
         }
+    }
+}
+
+fn set_status_leds(idle_led: &mut Output<'_, AnyPin>, busy_led: &mut Output<'_, AnyPin>, collision_led: &mut Output<'_, AnyPin>, line_state: LineCondition) {
+    match line_state {
+        LineCondition::Idle => {
+            idle_led.set_high();
+            busy_led.set_low();
+            collision_led.set_low();
+        },
+        LineCondition::Busy => {
+            idle_led.set_low();
+            busy_led.set_high();
+            collision_led.set_low();
+        },
+        LineCondition::Collision => {
+            idle_led.set_low();
+            busy_led.set_low();
+            collision_led.set_high();
+        },
     }
 }
