@@ -2,18 +2,27 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+use cortex_m::register::basepri::read;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
 use embassy_stm32::time::Hertz;
+use embassy_stm32::usart::RingBufferedUartRx;
+use embassy_stm32::usart::UartRx;
 use embassy_stm32::Config;
 use embassy_stm32::{
+    bind_interrupts,
+    usart,
+    peripherals,
     exti::ExtiInput,
     gpio::{AnyPin, Input, Level, Output, Pull, Speed},
 };
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
+
+use embassy_stm32::dma::NoDma;
+use embassy_stm32::usart::{Config as UsartConfig, Uart};
 
 enum LineCondition {
     Idle,
@@ -26,8 +35,12 @@ const HALF_BIT_PERIOD: u64 = 500;
 const IDLE_CUTOFF: u64 = 1150;
 const COLLISION_CUTOFF: u64 = 1110;
 
+bind_interrupts!(struct Irqs {
+    USART1 => usart::InterruptHandler<peripherals::USART1>;
+});
+
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -59,7 +72,18 @@ async fn main(_spawner: Spawner) {
 
     let mut line_state = LineCondition::Idle;
 
-    info!("entering loop!");
+
+    let usart_config = UsartConfig::default();
+    let mut uart = Uart::new(p.USART1, p.PA10, p.PA9, Irqs, NoDma, p.DMA2_CH2, usart_config).unwrap();
+    let (_tx, mut rx) = uart.split();
+
+    spawner.spawn(uart_task(rx)).unwrap();
+
+    // // let mut buf = [0u8; 256];
+    // let rx = rx.into_ring_buffered(&mut buf);
+
+
+    //info!("entering loop!");
     loop {
         match rx_pin.get_level() {
             Level::High => {
@@ -71,7 +95,7 @@ async fn main(_spawner: Spawner) {
                 {
                     Either::First(_) => {
                         // line has gone idle
-                        info!("IDLE");
+                        //info!("IDLE");
                         line_state = LineCondition::Idle;
                         set_status_leds(
                             &mut idle_led,
@@ -100,7 +124,7 @@ async fn main(_spawner: Spawner) {
                 {
                     Either::First(_) => {
                         // the collision timeout triggered
-                        info!("COLLISION");
+                        //info!("COLLISION");
                         line_state = LineCondition::Collision;
                         set_status_leds(
                             &mut idle_led,
@@ -118,6 +142,18 @@ async fn main(_spawner: Spawner) {
                 }
             }
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn uart_task(mut rx: UartRx<'static, peripherals::USART1, peripherals::DMA2_CH2>) {
+    let mut dma_buf = [0u8; 1024];
+    let mut read_buf = [0u8; 1024];
+    let mut test3 = rx.into_ring_buffered(&mut dma_buf);
+    //test3.start().unwrap();
+    loop {
+        let n = test3.read(&mut read_buf).await.unwrap();
+        info!("{}", n);
     }
 }
 
