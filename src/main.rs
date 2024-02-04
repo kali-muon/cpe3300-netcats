@@ -6,6 +6,8 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
+use embassy_stm32::time::Hertz;
+use embassy_stm32::Config;
 use embassy_stm32::{
     exti::ExtiInput,
     gpio::{AnyPin, Input, Level, Output, Pull, Speed},
@@ -21,18 +23,36 @@ enum LineCondition {
 
 const BIT_PERIOD: u64 = 1000;
 const HALF_BIT_PERIOD: u64 = 500;
-const IDLE_CUTOFF: u64 = 1120;
-const COLLISION_CUTOFF: u64 = 1050;
+const IDLE_CUTOFF: u64 = 1150;
+const COLLISION_CUTOFF: u64 = 1110;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let p = embassy_stm32::init(Default::default());
+    let mut config = Config::default();
+    {
+        use embassy_stm32::rcc::*;
+        config.rcc.pll_src = PllSource::HSI;
+        config.rcc.pll = Some(Pll {
+            prediv: PllPreDiv::DIV8,
+            mul: PllMul::MUL180,
+            divp: Some(PllPDiv::DIV2),
+            divq: Some(PllQDiv::DIV2),
+            divr: Some(PllRDiv::DIV2),
+        });
+        config.rcc.ahb_pre = AHBPrescaler::DIV1;
+        config.rcc.apb1_pre = APBPrescaler::DIV4;
+        config.rcc.apb2_pre = APBPrescaler::DIV2;
+        config.rcc.sys = Sysclk::PLL1_P;
+    }
+
+    let p = embassy_stm32::init(config); // this does high clock speed
+    // let p = embassy_stm32::init(Default::default()); // this does low clock speed
 
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
-    let mut idle_led = Output::new(p.PB15, Level::Low, Speed::Medium).degrade();
-    let mut busy_led = Output::new(p.PB14, Level::Low, Speed::Medium).degrade();
-    let mut collision_led = Output::new(p.PB13, Level::Low, Speed::Medium).degrade();
+    let mut idle_led = Output::new(p.PB15, Level::Low, Speed::High).degrade();
+    let mut busy_led = Output::new(p.PB14, Level::Low, Speed::High).degrade();
+    let mut collision_led = Output::new(p.PB13, Level::Low, Speed::High).degrade();
 
     let rx_pin = Input::new(p.PC8, Pull::None);
     let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);

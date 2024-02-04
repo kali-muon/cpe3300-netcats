@@ -1,5 +1,6 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip STM32F411RETx"
+# runner = "probe-rs run --chip STM32F411RETx"
+runner = "probe-rs run --chip STM32F446RETx"
 
 rustflags = [
   # LLD (shipped with the Rust toolchain) is used as the default linker
