@@ -13,16 +13,21 @@ use embassy_stm32::usart::UartRx;
 use embassy_stm32::Config;
 use embassy_stm32::{
     bind_interrupts,
-    usart,
-    peripherals,
     exti::ExtiInput,
     gpio::{AnyPin, Input, Level, Output, Pull, Speed},
+    peripherals, usart,
 };
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::pipe::{Pipe, Reader, Writer};
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_stm32::dma::NoDma;
 use embassy_stm32::usart::{Config as UsartConfig, Uart};
+
+use embedded_io_async::Write;
+
+use static_cell::StaticCell;
 
 enum LineCondition {
     Idle,
@@ -40,7 +45,7 @@ bind_interrupts!(struct Irqs {
 });
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(spawner: Spawner) -> ! {
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -59,7 +64,7 @@ async fn main(spawner: Spawner) {
     }
 
     let p = embassy_stm32::init(config); // this does high clock speed
-    // let p = embassy_stm32::init(Default::default()); // this does low clock speed
+                                         // let p = embassy_stm32::init(Default::default()); // this does low clock speed
 
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
@@ -67,21 +72,31 @@ async fn main(spawner: Spawner) {
     let mut busy_led = Output::new(p.PB14, Level::Low, Speed::High).degrade();
     let mut collision_led = Output::new(p.PB13, Level::Low, Speed::High).degrade();
 
+    let mut tx_pin = Output::new(p.PC6, Level::High, Speed::High).degrade();
     let rx_pin = Input::new(p.PC8, Pull::None);
     let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
 
     let mut line_state = LineCondition::Idle;
 
-
     let usart_config = UsartConfig::default();
-    let mut uart = Uart::new(p.USART1, p.PA10, p.PA9, Irqs, NoDma, p.DMA2_CH2, usart_config).unwrap();
+    let mut uart = Uart::new(
+        p.USART1,
+        p.PA10,
+        p.PA9,
+        Irqs,
+        NoDma,
+        p.DMA2_CH2,
+        usart_config,
+    )
+    .unwrap();
     let (_tx, mut rx) = uart.split();
 
-    spawner.spawn(uart_task(rx)).unwrap();
+    let pipe: &'static mut Pipe<NoopRawMutex, 256> =
+        STATIC_PIPE.init(Pipe::<NoopRawMutex, 256>::new());
+    let (reader, writer) = pipe.split();
 
-    // // let mut buf = [0u8; 256];
-    // let rx = rx.into_ring_buffered(&mut buf);
-
+    spawner.spawn(uart_task(rx, writer.clone())).unwrap();
+    spawner.spawn(manchester_tx(tx_pin, reader)).unwrap();
 
     //info!("entering loop!");
     loop {
@@ -145,15 +160,44 @@ async fn main(spawner: Spawner) {
     }
 }
 
+static STATIC_PIPE: StaticCell<Pipe<NoopRawMutex, 256>> = StaticCell::new();
+
 #[embassy_executor::task]
-async fn uart_task(mut rx: UartRx<'static, peripherals::USART1, peripherals::DMA2_CH2>) {
-    let mut dma_buf = [0u8; 1024];
-    let mut read_buf = [0u8; 1024];
-    let mut test3 = rx.into_ring_buffered(&mut dma_buf);
-    //test3.start().unwrap();
+async fn manchester_tx(
+    mut tx_pin: Output<'static, AnyPin>,
+    reader: Reader<'static, NoopRawMutex, 256>,
+) {
+    let mut buf = [0u8; 256];
     loop {
-        let n = test3.read(&mut read_buf).await.unwrap();
-        info!("{}", n);
+        let n = reader.read(&mut buf).await;
+        let word = core::str::from_utf8(&buf).unwrap();
+        info!("{}", word);
+    }
+}
+
+#[embassy_executor::task]
+async fn uart_task(
+    rx: UartRx<'static, peripherals::USART1, peripherals::DMA2_CH2>,
+    mut pipe_writer: Writer<'static, NoopRawMutex, 256>,
+) {
+    let mut dma_buf = [0u8; 1024];
+    let mut read_buf = [0u8; 256];
+    let mut sending_buf = [0u8; 256];
+    let mut index = 0;
+    let mut ring_uart = rx.into_ring_buffered(&mut dma_buf);
+    loop {
+        let number_characters_read = ring_uart.read(&mut read_buf).await.unwrap();
+
+        sending_buf[index..index + number_characters_read]
+            .copy_from_slice(&read_buf[..number_characters_read]);
+        index += number_characters_read;
+
+        //info!("sucessfully read: {}", read_buf);
+        if read_buf.contains(&b'\r') {
+            pipe_writer.write_all(&sending_buf).await.unwrap();
+            info!("writing: enter pushed");
+            index = 0;
+        }
     }
 }
 
