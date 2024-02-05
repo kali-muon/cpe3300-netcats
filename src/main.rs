@@ -8,6 +8,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
+use embassy_stm32::peripherals::PC13;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::RingBufferedUartRx;
 use embassy_stm32::usart::UartRx;
@@ -85,6 +86,9 @@ async fn main(spawner: Spawner) -> ! {
     let rx_pin = Input::new(p.PC8, Pull::None);
     let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
 
+    let push_button = Input::new(p.PC13, Pull::None);
+    let mut push_button = ExtiInput::new(push_button, p.EXTI13);
+
     let mut line_state = LineCondition::Idle;
 
     let usart_config = UsartConfig::default();
@@ -107,6 +111,9 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(uart_task(rx, writer.clone())).unwrap();
     spawner
         .spawn(collision_handling_tx(tx_pin, reader))
+        .unwrap();
+    spawner
+        .spawn(button_tx(push_button, writer.clone()))
         .unwrap();
 
     //info!("entering loop!");
@@ -174,6 +181,17 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
+#[embassy_executor::task]
+async fn button_tx(
+    mut button: ExtiInput<'static, PC13>,
+    mut writer: Writer<'static, NoopRawMutex, 256>,
+) {
+    loop {
+        button.wait_for_rising_edge().await;
+        writer.write_all(b"Hello World").await.unwrap();
+    }
+}
+
 static STATIC_PIPE: StaticCell<Pipe<NoopRawMutex, 256>> = StaticCell::new();
 
 #[embassy_executor::task]
@@ -202,7 +220,7 @@ async fn collision_handling_tx(
                 Either::First(_) => {
                     info!("finished transmititng");
                     break;
-                }, // finished
+                } // finished
                 Either::Second(_) => {
                     tx_pin.set_high();
                     // back off
@@ -272,8 +290,12 @@ async fn uart_task(
     loop {
         info!("waiting for uart");
         let number_characters_read = ring_uart.read(&mut read_buf).await.unwrap();
-        info!("character received\nindex = {}\nnchar = {}", index, number_characters_read);
-        sending_buf[index..index + number_characters_read].copy_from_slice(&read_buf[..number_characters_read]);
+        info!(
+            "character received\nindex = {}\nnchar = {}",
+            index, number_characters_read
+        );
+        sending_buf[index..index + number_characters_read]
+            .copy_from_slice(&read_buf[..number_characters_read]);
         index += number_characters_read;
         info!("copy from slice successful");
 
