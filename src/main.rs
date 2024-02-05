@@ -167,11 +167,11 @@ async fn manchester_tx(
     mut tx_pin: Output<'static, AnyPin>,
     reader: Reader<'static, NoopRawMutex, 256>,
 ) {
-    let mut buf = [0u8; 256];
+    let mut tx_buf = [0u8; 256];
     loop {
-        let n = reader.read(&mut buf).await;
-        let word = core::str::from_utf8(&buf).unwrap();
-        info!("{}", word);
+        let n = reader.read(&mut tx_buf).await;
+        let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
+        info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
     }
 }
 
@@ -189,12 +189,12 @@ async fn uart_task(
         let number_characters_read = ring_uart.read(&mut read_buf).await.unwrap();
 
         sending_buf[index..index + number_characters_read]
-            .copy_from_slice(&read_buf[..number_characters_read]);
+            .copy_from_slice(&read_buf[..number_characters_read]); 
         index += number_characters_read;
 
         //info!("sucessfully read: {}", read_buf);
         if read_buf.contains(&b'\r') {
-            pipe_writer.write_all(&sending_buf).await.unwrap();
+            pipe_writer.write_all(&sending_buf[..index - 1]).await.unwrap(); // -1 to strip carriage return
             info!("writing: enter pushed");
             index = 0;
         }
