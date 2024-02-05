@@ -37,7 +37,7 @@ enum LineCondition {
 }
 
 const BIT_PERIOD: u64 = 1000;
-const HALF_BIT_PERIOD: u64 = 500;
+const HALF_BIT_PERIOD: u64 = BIT_PERIOD / 2;
 const IDLE_CUTOFF: u64 = 1150;
 const COLLISION_CUTOFF: u64 = 1110;
 
@@ -174,8 +174,24 @@ async fn manchester_tx(
         let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
         let bv = BitSlice::<_, Msb0>::from_slice(&tx_buf[..n]);
         for b in bv.iter().by_vals() {
-            info!("{}", b);
+            match b {
+                true => { // transmit a 1
+                    // check state first!!
+                    tx_pin.set_low();
+                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                    tx_pin.set_high();
+                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                }
+                false => { // transmit a 0
+                    // check state first!!
+                    tx_pin.set_high();
+                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                    tx_pin.set_low();
+                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                }
+            }
         }
+        tx_pin.set_high();
         info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
     }
 }
