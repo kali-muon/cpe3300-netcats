@@ -10,7 +10,8 @@ cortex-m-rt = "0.7"
 # embassy things
 # embassy-stm32 = { version = "0.1.0", features = ["stm32f411re", "defmt", "unstable-pac", "memory-x", "time-driver-tim2", "exti", "chrono"] }
 embassy-stm32 = { version = "0.1.0", features = ["stm32f446re", "defmt", "unstable-pac", "memory-x", "time-driver-tim2", "exti", "chrono"] }
-embassy-sync = { version = "0.5.0", features = ["defmt"] }
+# embassy-sync = { version = "0.5.0", features = ["defmt"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", features = ["defmt"] }
 embassy-executor = { version = "0.5.0", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt", "integrated-timers"] }
 embassy-futures = "0.1.1"
 # embassy-time = { version = "0.3.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }

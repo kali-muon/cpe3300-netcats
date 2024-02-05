@@ -18,11 +18,14 @@ use embassy_stm32::{
     gpio::{AnyPin, Input, Level, Output, Pull, Speed},
     peripherals, usart,
 };
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pipe::{Pipe, Reader, Writer};
+use embassy_sync::signal::Signal;
 use embassy_time::Duration;
-use embassy_time::Timer;
 use embassy_time::Ticker;
+use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_stm32::dma::NoDma;
@@ -32,6 +35,7 @@ use embedded_io_async::Write;
 
 use static_cell::StaticCell;
 
+#[derive(PartialEq)]
 enum LineCondition {
     Idle,
     Busy,
@@ -42,6 +46,8 @@ const BIT_PERIOD: u64 = 1000;
 const HALF_BIT_PERIOD: u64 = BIT_PERIOD / 2;
 const IDLE_CUTOFF: u64 = 1150;
 const COLLISION_CUTOFF: u64 = 1110;
+
+static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
@@ -67,7 +73,7 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let p = embassy_stm32::init(config); // this does high clock speed
-    // let p = embassy_stm32::init(Default::default()); // this does low clock speed
+                                         // let p = embassy_stm32::init(Default::default()); // this does low clock speed
 
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
@@ -99,7 +105,9 @@ async fn main(spawner: Spawner) -> ! {
     let (reader, writer) = pipe.split();
 
     spawner.spawn(uart_task(rx, writer.clone())).unwrap();
-    spawner.spawn(manchester_tx(tx_pin, reader)).unwrap();
+    spawner
+        .spawn(collision_handling_tx(tx_pin, reader))
+        .unwrap();
 
     //info!("entering loop!");
     loop {
@@ -115,6 +123,7 @@ async fn main(spawner: Spawner) -> ! {
                         // line has gone idle
                         //info!("IDLE");
                         line_state = LineCondition::Idle;
+                        STATE_SIGNAL.signal(LineCondition::Idle);
                         set_status_leds(
                             &mut idle_led,
                             &mut busy_led,
@@ -133,6 +142,7 @@ async fn main(spawner: Spawner) -> ! {
             Level::Low => {
                 // info!("BUSY");
                 line_state = LineCondition::Busy;
+                STATE_SIGNAL.signal(LineCondition::Busy);
                 set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
                 match select(
                     Timer::after_micros(COLLISION_CUTOFF),
@@ -144,6 +154,7 @@ async fn main(spawner: Spawner) -> ! {
                         // the collision timeout triggered
                         //info!("COLLISION");
                         line_state = LineCondition::Collision;
+                        STATE_SIGNAL.signal(LineCondition::Collision);
                         set_status_leds(
                             &mut idle_led,
                             &mut busy_led,
@@ -166,41 +177,83 @@ async fn main(spawner: Spawner) -> ! {
 static STATIC_PIPE: StaticCell<Pipe<NoopRawMutex, 256>> = StaticCell::new();
 
 #[embassy_executor::task]
-async fn manchester_tx(
+async fn collision_handling_tx(
     mut tx_pin: Output<'static, AnyPin>,
     reader: Reader<'static, NoopRawMutex, 256>,
 ) {
+    info!("starting collision handling tx");
     let mut tx_buf = [0u8; 256];
     let mut tx_ticker = Ticker::every(Duration::from_micros(HALF_BIT_PERIOD));
+
     loop {
         let n = reader.read(&mut tx_buf).await;
         let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
-        let bv = BitSlice::<_, Msb0>::from_slice(&tx_buf[..n]);
-        tx_ticker.reset(); // prepare the ticker for the transmit
-        for b in bv.iter().by_vals() {
-            // check state first!!
-            match b {
-                true => { // transmit a 1
-                    tx_pin.set_low();
-                    // Timer::after_micros(HALF_BIT_PERIOD).await;
-                    tx_ticker.next().await;
+        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..n]);
+        info!("received text");
+        loop {
+            info!("transmitting and waiting");
+            line_condition_wait_until(LineCondition::Idle).await;
+            match select(
+                manchester_tx(&mut tx_pin, &mut tx_ticker, &tx_bits),
+                line_condition_wait_until(LineCondition::Collision),
+            )
+            .await
+            {
+                Either::First(_) => {
+                    info!("finished transmititng");
+                    break;
+                }, // finished
+                Either::Second(_) => {
                     tx_pin.set_high();
-                    // Timer::after_micros(HALF_BIT_PERIOD).await;
-                    tx_ticker.next().await;
-                }
-                false => { // transmit a 0
-                    tx_pin.set_high();
-                    // Timer::after_micros(HALF_BIT_PERIOD).await;
-                    tx_ticker.next().await;
-                    tx_pin.set_low();
-                    // Timer::after_micros(HALF_BIT_PERIOD).await;
-                    tx_ticker.next().await;
+                    // back off
+                    //continue;
+                    info!("Stopped transmitting due to collision!");
+                    break;
                 }
             }
         }
-        tx_pin.set_high();
         info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
     }
+}
+
+async fn line_condition_wait_until(condition: LineCondition) {
+    while STATE_SIGNAL.wait().await != condition {
+        STATE_SIGNAL.reset();
+    } // exits when signal == condition
+    STATE_SIGNAL.reset();
+}
+
+async fn manchester_tx(
+    tx_pin: &mut Output<'_, AnyPin>,
+    ticker: &mut Ticker,
+    tx_bits: &BitSlice<u8, Msb0>,
+) {
+    info!("starting tx");
+    ticker.reset(); // prepare the ticker for the transmit
+    for b in tx_bits.iter().by_vals() {
+        // check state first!!
+        match b {
+            true => {
+                // transmit a 1
+                tx_pin.set_low();
+                // Timer::after_micros(HALF_BIT_PERIOD).await;
+                ticker.next().await;
+                tx_pin.set_high();
+                // Timer::after_micros(HALF_BIT_PERIOD).await;
+                ticker.next().await;
+            }
+            false => {
+                // transmit a 0
+                tx_pin.set_high();
+                // Timer::after_micros(HALF_BIT_PERIOD).await;
+                ticker.next().await;
+                tx_pin.set_low();
+                // Timer::after_micros(HALF_BIT_PERIOD).await;
+                ticker.next().await;
+            }
+        }
+    }
+    tx_pin.set_high();
 }
 
 #[embassy_executor::task]
@@ -214,15 +267,18 @@ async fn uart_task(
     let mut index = 0;
     let mut ring_uart = rx.into_ring_buffered(&mut dma_buf);
     loop {
+        info!("waiting for uart");
         let number_characters_read = ring_uart.read(&mut read_buf).await.unwrap();
 
-        sending_buf[index..index + number_characters_read]
-            .copy_from_slice(&read_buf[..number_characters_read]); 
+        sending_buf[index..].copy_from_slice(&read_buf[..number_characters_read]);
         index += number_characters_read;
 
         //info!("sucessfully read: {}", read_buf);
         if read_buf.contains(&b'\r') {
-            pipe_writer.write_all(&sending_buf[..index - 1]).await.unwrap(); // -1 to strip carriage return
+            pipe_writer
+                .write_all(&sending_buf[..index - 1])
+                .await
+                .unwrap(); // -1 to strip carriage return
             info!("writing: enter pushed");
             index = 0;
         }
