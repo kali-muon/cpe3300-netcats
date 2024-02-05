@@ -20,7 +20,9 @@ use embassy_stm32::{
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::pipe::{Pipe, Reader, Writer};
+use embassy_time::Duration;
 use embassy_time::Timer;
+use embassy_time::Ticker;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_stm32::dma::NoDma;
@@ -65,7 +67,7 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let p = embassy_stm32::init(config); // this does high clock speed
-                                         // let p = embassy_stm32::init(Default::default()); // this does low clock speed
+    // let p = embassy_stm32::init(Default::default()); // this does low clock speed
 
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
@@ -169,25 +171,30 @@ async fn manchester_tx(
     reader: Reader<'static, NoopRawMutex, 256>,
 ) {
     let mut tx_buf = [0u8; 256];
+    let mut tx_ticker = Ticker::every(Duration::from_micros(HALF_BIT_PERIOD));
     loop {
         let n = reader.read(&mut tx_buf).await;
         let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
         let bv = BitSlice::<_, Msb0>::from_slice(&tx_buf[..n]);
+        tx_ticker.reset(); // prepare the ticker for the transmit
         for b in bv.iter().by_vals() {
+            // check state first!!
             match b {
                 true => { // transmit a 1
-                    // check state first!!
                     tx_pin.set_low();
-                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                    // Timer::after_micros(HALF_BIT_PERIOD).await;
+                    tx_ticker.next().await;
                     tx_pin.set_high();
-                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                    // Timer::after_micros(HALF_BIT_PERIOD).await;
+                    tx_ticker.next().await;
                 }
                 false => { // transmit a 0
-                    // check state first!!
                     tx_pin.set_high();
-                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                    // Timer::after_micros(HALF_BIT_PERIOD).await;
+                    tx_ticker.next().await;
                     tx_pin.set_low();
-                    Timer::after_micros(HALF_BIT_PERIOD).await;
+                    // Timer::after_micros(HALF_BIT_PERIOD).await;
+                    tx_ticker.next().await;
                 }
             }
         }
