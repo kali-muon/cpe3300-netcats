@@ -217,10 +217,12 @@ async fn collision_handling_tx(
 }
 
 async fn line_condition_wait_until(condition: LineCondition) {
+    info!("entering wait_until");
     while STATE_SIGNAL.wait().await != condition {
         STATE_SIGNAL.reset();
     } // exits when signal == condition
     STATE_SIGNAL.reset();
+    info!("exiting wait_until");
 }
 
 async fn manchester_tx(
@@ -254,6 +256,7 @@ async fn manchester_tx(
         }
     }
     tx_pin.set_high();
+    info!("finished tx");
 }
 
 #[embassy_executor::task]
@@ -269,12 +272,14 @@ async fn uart_task(
     loop {
         info!("waiting for uart");
         let number_characters_read = ring_uart.read(&mut read_buf).await.unwrap();
-
-        sending_buf[index..].copy_from_slice(&read_buf[..number_characters_read]);
+        info!("character received\nindex = {}\nnchar = {}", index, number_characters_read);
+        sending_buf[index..index + number_characters_read].copy_from_slice(&read_buf[..number_characters_read]);
         index += number_characters_read;
+        info!("copy from slice successful");
 
         //info!("sucessfully read: {}", read_buf);
         if read_buf.contains(&b'\r') {
+            info!("writing to pipe");
             pipe_writer
                 .write_all(&sending_buf[..index - 1])
                 .await
