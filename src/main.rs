@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+use bitvec::prelude::*;
 use cortex_m::register::basepri::read;
 use defmt::*;
 use embassy_executor::Spawner;
@@ -171,6 +172,10 @@ async fn manchester_tx(
     loop {
         let n = reader.read(&mut tx_buf).await;
         let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
+        let bv = BitSlice::<_, Msb0>::from_slice(&tx_buf[..n]);
+        for b in bv.iter().by_vals() {
+            info!("{}", b);
+        }
         info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
     }
 }
