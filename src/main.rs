@@ -8,6 +8,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
+use embassy_stm32::gpio::OutputOpenDrain;
 use embassy_stm32::peripherals::PC13;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::RingBufferedUartRx;
@@ -48,6 +49,13 @@ const HALF_BIT_PERIOD: u64 = BIT_PERIOD / 2;
 const IDLE_CUTOFF: u64 = 1150;
 const COLLISION_CUTOFF: u64 = 1110;
 
+const NULLS_COMMAND: &[u8] = b"\\nulls";
+const NULLS_PAYLOAD: &[u8] = b"\0\0\0\0\0\0\0\0";
+const AA_COMMAND: &[u8] = b"\\aa";
+const AA_PAYLOAD: &[u8] = b"\xaa";
+const LONG_COMMAND: &[u8] = b"\\long";
+const LONG_PAYLOAD: &[u8] = b"dsfkghfdlgdjfgo;irxgdjomgixrdlkfdfjdrlmgidfjggkjxfvxilrdjgxldfigjdnrgfldgkmxdivjfligjcfmkdj.stp9ergsgleirhg438r7tous85etj4w98r23uorjew8rm43fj488nto7ewmtw357i4omtw5ex9xwu5o8txj3o874i273z6tvy235rv247rc48xri39t,reim4ctx,xjowirjxt498txexworixremtojisdkkk";
+
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
 bind_interrupts!(struct Irqs {
@@ -82,8 +90,14 @@ async fn main(spawner: Spawner) -> ! {
     let mut busy_led = Output::new(p.PB14, Level::Low, Speed::High).degrade();
     let mut collision_led = Output::new(p.PB13, Level::Low, Speed::High).degrade();
 
-    let mut tx_pin = Output::new(p.PC6, Level::High, Speed::High).degrade();
-    let rx_pin = Input::new(p.PC8, Pull::None);
+    info!("Null Characters{}", NULLS_PAYLOAD);
+
+    // let mut tx_pin = OutputOpenDrain::new(p.PC6, Level::High, Speed::High, Pull::Down).degrade();
+    // let rx_pin = Input::new(p.PC8, Pull::Up);
+    // let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
+    // let mut tx_pin = OutputOpenDrain::new(p.PB9, Level::High, Speed::High, Pull::Down).degrade();
+    let mut tx_pin = Output::new(p.PB9, Level::High, Speed::High).degrade();
+    let rx_pin = Input::new(p.PB8, Pull::Up);
     let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
 
     let push_button = Input::new(p.PC13, Pull::None);
@@ -205,7 +219,8 @@ async fn collision_handling_tx(
 
     loop {
         let n = reader.read(&mut tx_buf).await;
-        let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
+        info!("n = {}",n);
+        // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
         let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..n]);
         info!("received text");
         loop {
@@ -230,7 +245,7 @@ async fn collision_handling_tx(
                 }
             }
         }
-        info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
+        // info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
     }
 }
 
@@ -301,11 +316,15 @@ async fn uart_task(
 
         //info!("sucessfully read: {}", read_buf);
         if read_buf.contains(&b'\r') {
+            let message = &sending_buf[..index - 1]; // -1 to strip carriage return
+            let transmission = match message {
+                NULLS_COMMAND => NULLS_PAYLOAD,
+                AA_COMMAND => AA_PAYLOAD,
+                LONG_COMMAND => LONG_PAYLOAD,
+                _ => message,
+            };
             info!("writing to pipe");
-            pipe_writer
-                .write_all(&sending_buf[..index - 1])
-                .await
-                .unwrap(); // -1 to strip carriage return
+            pipe_writer.write_all(transmission).await.unwrap(); 
             info!("writing: enter pushed");
             index = 0;
         }
