@@ -90,8 +90,6 @@ async fn main(spawner: Spawner) -> ! {
     let mut busy_led = Output::new(p.PB14, Level::Low, Speed::High).degrade();
     let mut collision_led = Output::new(p.PB13, Level::Low, Speed::High).degrade();
 
-    info!("Null Characters{}", NULLS_PAYLOAD);
-
     // let mut tx_pin = OutputOpenDrain::new(p.PC6, Level::High, Speed::High, Pull::Down).degrade();
     // let rx_pin = Input::new(p.PC8, Pull::Up);
     // let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
