@@ -20,7 +20,6 @@ use embassy_stm32::{
     gpio::{AnyPin, Input, Level, Output, Pull, Speed},
     peripherals, usart,
 };
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pipe::{Pipe, Reader, Writer};
@@ -28,6 +27,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 use embassy_time::Ticker;
 use embassy_time::Timer;
+use panic_probe::hard_fault;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_stm32::dma::NoDma;
@@ -64,7 +64,9 @@ bind_interrupts!(struct Irqs {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
-    let mut config = Config::default();
+    
+    let mut config = Config::default(); 
+    // STM32F446RE clock config (180 MHz)
     {
         use embassy_stm32::rcc::*;
         config.rcc.pll_src = PllSource::HSI;
@@ -81,9 +83,26 @@ async fn main(spawner: Spawner) -> ! {
         config.rcc.sys = Sysclk::PLL1_P;
     }
 
+    // // STM32F411RE clock config (100 MHz)
+    // {
+    //     use embassy_stm32::rcc::*;
+    //     config.rcc.pll_src = PllSource::HSI;
+    //     config.rcc.pll = Some(Pll {
+    //         prediv: PllPreDiv::DIV16,
+    //         mul: PllMul::MUL400,
+    //         divp: Some(PllPDiv::DIV4),
+    //         divq: Some(PllQDiv::DIV4),
+    //         divr: Some(PllRDiv::DIV4),
+    //     });
+    //     config.rcc.sys = Sysclk::PLL1_P;
+    //     config.rcc.ahb_pre = AHBPrescaler::DIV1;
+    //     config.rcc.apb1_pre = APBPrescaler::DIV2;
+    //     config.rcc.apb2_pre = APBPrescaler::DIV1;
+    // }
+
     let p = embassy_stm32::init(config); // this does high clock speed
                                          // let p = embassy_stm32::init(Default::default()); // this does low clock speed
-
+    info!("initialized clocks successfully!");
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
     let mut idle_led = Output::new(p.PB15, Level::Low, Speed::High).degrade();
@@ -91,13 +110,14 @@ async fn main(spawner: Spawner) -> ! {
     let mut collision_led = Output::new(p.PB13, Level::Low, Speed::High).degrade();
 
     // let mut tx_pin = OutputOpenDrain::new(p.PC6, Level::High, Speed::High, Pull::Down).degrade();
+    // let mut tx_pin = Output::new(p.PB9, Level::High, Speed::High).degrade();
+    let mut tx_pin = OutputOpenDrain::new(p.PB9, Level::High, Speed::High, Pull::None).degrade(); // working open drain
+
     // let rx_pin = Input::new(p.PC8, Pull::Up);
     // let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
-    // let mut tx_pin = OutputOpenDrain::new(p.PB9, Level::High, Speed::High, Pull::Down).degrade();
-    let mut tx_pin = Output::new(p.PB9, Level::High, Speed::High).degrade();
     let rx_pin = Input::new(p.PB8, Pull::Up);
     let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
-
+    
     let push_button = Input::new(p.PC13, Pull::None);
     let mut push_button = ExtiInput::new(push_button, p.EXTI13);
 
