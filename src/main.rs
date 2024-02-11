@@ -30,7 +30,6 @@ use embassy_time::Instant;
 use embassy_time::Ticker;
 use embassy_time::Timer;
 use panic_probe::hard_fault;
-use stm32f4xx_hal::pac::adc1::jsqr::W;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_stm32::dma::NoDma;
