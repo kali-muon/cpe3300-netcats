@@ -2,42 +2,37 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+mod receive;
+mod transmit;
+
 use bitvec::prelude::*;
-use bitvec::slice::BitRefIter;
-use cortex_m::register::basepri::read;
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_futures::select::select;
-use embassy_futures::select::Either;
-use embassy_stm32::gpio::OutputOpenDrain;
-use embassy_stm32::peripherals::PC13;
-use embassy_stm32::time::Hertz;
-use embassy_stm32::usart::RingBufferedUartRx;
-use embassy_stm32::usart::UartRx;
-use embassy_stm32::Config;
+use embassy_futures::select::{select, Either};
 use embassy_stm32::{
     bind_interrupts,
+    dma::NoDma,
     exti::ExtiInput,
-    gpio::{AnyPin, Input, Level, Output, Pull, Speed},
-    peripherals, usart,
+    gpio::{AnyPin, Input, Level, Output, OutputOpenDrain, Pull, Speed},
+    peripherals,
+    peripherals::PC13,
+    usart,
+    usart::{Config as UsartConfig, Uart, UartRx},
+    Config,
 };
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::pipe::{Pipe, Reader, Writer};
-use embassy_sync::signal::Signal;
-use embassy_time::Duration;
-use embassy_time::Instant;
-use embassy_time::Ticker;
-use embassy_time::Timer;
-use panic_probe::hard_fault;
-use {defmt_rtt as _, panic_probe as _};
-
-use embassy_stm32::dma::NoDma;
-use embassy_stm32::usart::{Config as UsartConfig, Uart};
-
+use embassy_sync::{
+    blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex},
+    pipe::{Pipe, Reader, Writer},
+    signal::Signal,
+};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::Write;
-
+use panic_probe as _;
 use static_cell::StaticCell;
+
+use crate::{receive::receive::set_status_leds, transmit::transmit::collision_handling_tx};
+
 
 #[derive(PartialEq, Copy, Clone, Format)]
 enum LineCondition {
@@ -381,90 +376,6 @@ async fn button_tx(
 static STATIC_PIPE: StaticCell<Pipe<NoopRawMutex, 256>> = StaticCell::new();
 
 #[embassy_executor::task]
-async fn collision_handling_tx(
-    mut tx_pin: Output<'static, AnyPin>,
-    reader: Reader<'static, NoopRawMutex, 256>,
-) {
-    info!("starting collision handling tx");
-    let mut tx_buf = [0u8; 256];
-    let mut tx_ticker = Ticker::every(HALF_BIT_PERIOD);
-
-    loop {
-        let n = reader.read(&mut tx_buf).await;
-        info!("n = {}", n);
-        // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
-        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..n]);
-        info!("received text");
-        loop {
-            info!("transmitting and waiting");
-            line_condition_wait_until(LineCondition::Idle).await;
-            match select(
-                manchester_tx(&mut tx_pin, &mut tx_ticker, &tx_bits),
-                line_condition_wait_until(LineCondition::Collision),
-            )
-            .await
-            {
-                Either::First(_) => {
-                    info!("finished transmititng");
-                    break;
-                } // finished
-                Either::Second(_) => {
-                    tx_pin.set_high();
-                    // back off
-                    //continue;
-                    info!("Stopped transmitting due to collision!");
-                    break;
-                }
-            }
-        }
-        // info!("word length {}: {}\nrecv length: {}", word.len(), word, n);
-    }
-}
-
-async fn line_condition_wait_until(condition: LineCondition) {
-    info!("entering wait_until");
-    while STATE_SIGNAL.wait().await != condition {
-        STATE_SIGNAL.reset();
-    } // exits when signal == condition
-    STATE_SIGNAL.reset();
-    info!("exiting wait_until");
-}
-
-async fn manchester_tx(
-    tx_pin: &mut Output<'_, AnyPin>,
-    ticker: &mut Ticker,
-    tx_bits: &BitSlice<u8, Msb0>,
-) {
-    info!("starting tx");
-    ticker.reset(); // prepare the ticker for the transmit
-    for b in tx_bits.iter().by_vals() {
-        // check state first!!
-        match b {
-            true => {
-                // transmit a 1
-                tx_pin.set_low();
-                // Timer::after_micros(HALF_BIT_PERIOD).await;
-                ticker.next().await;
-                tx_pin.set_high();
-                // Timer::after_micros(HALF_BIT_PERIOD).await;
-                ticker.next().await;
-            }
-            false => {
-                // transmit a 0
-                tx_pin.set_high();
-                // Timer::after_micros(HALF_BIT_PERIOD).await;
-                ticker.next().await;
-                tx_pin.set_low();
-                // Timer::after_micros(HALF_BIT_PERIOD).await;
-                ticker.next().await;
-            }
-        }
-    }
-    tx_pin.set_high();
-    info!("finished tx");
-}
-
-#[embassy_executor::task]
 async fn uart_task(
     rx: UartRx<'static, peripherals::USART1, peripherals::DMA2_CH2>,
     mut pipe_writer: Writer<'static, NoopRawMutex, 256>,
@@ -500,31 +411,6 @@ async fn uart_task(
             pipe_writer.write_all(transmission).await.unwrap();
             info!("writing: enter pushed");
             index = 0;
-        }
-    }
-}
-
-fn set_status_leds(
-    idle_led: &mut Output<'_, AnyPin>,
-    busy_led: &mut Output<'_, AnyPin>,
-    collision_led: &mut Output<'_, AnyPin>,
-    line_state: LineCondition,
-) {
-    match line_state {
-        LineCondition::Idle => {
-            idle_led.set_high();
-            busy_led.set_low();
-            collision_led.set_low();
-        }
-        LineCondition::Busy => {
-            idle_led.set_low();
-            busy_led.set_high();
-            collision_led.set_low();
-        }
-        LineCondition::Collision => {
-            idle_led.set_low();
-            busy_led.set_low();
-            collision_led.set_high();
         }
     }
 }
