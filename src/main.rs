@@ -3,6 +3,7 @@
 #![feature(type_alias_impl_trait)]
 
 use bitvec::prelude::*;
+use bitvec::slice::BitRefIter;
 use cortex_m::register::basepri::read;
 use defmt::*;
 use embassy_executor::Spawner;
@@ -53,7 +54,7 @@ struct Edge {
 }
 
 impl Edge {
-    fn update(&self, level: Level) {
+    fn update(&mut self, level: Level) {
         self.level = level;
         self.time = Instant::now();
     }
@@ -66,23 +67,24 @@ impl Edge {
     }
     fn get_timeout_state(&self) -> LineCondition {
         match self.level {
-            Level::High => Idle,
-            Level::Low => Collision,
-        }        
+            Level::High => LineCondition::Idle,
+            Level::Low => LineCondition::Collision,
+        }
     }
 }
 
 // tolerance is in percent
 const PERIOD_TOLERANCE: f64 = 0.0132;
 // all times here are in milliseconds
-const BIT_PERIOD: Duration = Duration::from_millis(1000);
+const BIT_PERIOD_MS: u64 = 1000;
+const BIT_PERIOD: Duration = Duration::from_millis(BIT_PERIOD_MS);
 const BIT_PERIOD_UPPER_TOLERANCE: Duration = Duration::from_millis(
     BIT_PERIOD.as_millis() + ((BIT_PERIOD.as_millis() as f64 * PERIOD_TOLERANCE) as u64),
 );
 const BIT_PERIOD_LOWER_TOLERANCE: Duration = Duration::from_millis(
     BIT_PERIOD.as_millis() - ((BIT_PERIOD.as_millis() as f64 * PERIOD_TOLERANCE) as u64),
 );
-const HALF_BIT_PERIOD: Duration = BIT_PERIOD / 2;
+const HALF_BIT_PERIOD: Duration = Duration::from_millis(BIT_PERIOD.as_millis() / 2);
 const HALF_BIT_PERIOD_UPPER_TOLERANCE: Duration = Duration::from_millis(
     HALF_BIT_PERIOD.as_millis() + ((HALF_BIT_PERIOD.as_millis() as f64 * PERIOD_TOLERANCE) as u64),
 );
@@ -200,157 +202,127 @@ async fn main(spawner: Spawner) -> ! {
         time: Instant::MIN,
     };
     let mut read_bit: Level = Level::Low;
+
     loop {
-        {
-            // "begin transmission" state
-            // Assume we begin in idle state
-            rx_pin.wait_for_falling_edge().await;
-            line_state = LineCondition::Busy;
-            // now we are out of idle
-            let first_edge_time: Instant = Instant::now();
-            previous_edge.update(rx_pin.get_level());
-            let timeout_time = previous_edge.get_timeout_time(); // sets the collision cutoff
-            match select(rx_pin.wait_for_any_edge(), Timer::at(timeout_time)).await {
+        // loops once for each packet
+        let mut rx_buf = [0u8; 320];
+        let rx_bits: &mut BitSlice<_, Msb0> = BitSlice::from_slice_mut(&mut rx_buf);
+        let mut rx_iter = rx_bits.iter_mut();
+        let mut message_complete: bool = false;
+        while !message_complete {
+            // loops while receiving a packet
+            {
+                // "begin transmission" state
+                // Assume we begin in idle state
+                rx_pin.wait_for_falling_edge().await;
+                line_state = LineCondition::Busy;
+
+                // now we are out of idle
+                let first_edge_time: Instant = Instant::now();
+                previous_edge.update(rx_pin.get_level());
+                let timeout_time = previous_edge.get_timeout_time(); // sets the collision cutoff
+                match select(rx_pin.wait_for_any_edge(), Timer::at(timeout_time)).await {
+                    Either::First(_) => {
+                        current_edge.update(rx_pin.get_level());
+                        if current_edge.time.duration_since(previous_edge.time)
+                            > BIT_PERIOD_LOWER_TOLERANCE
+                        {
+                            previous_edge = current_edge;
+                            read_bit = current_edge.level;
+                            // exit "begin transmission state"
+                            // enter "decoding state"
+                        } else {
+                            // stay in "begin transmission state"
+                        }
+                    }
+                    Either::Second(_) => {
+                        line_state = previous_edge.get_timeout_state();
+                        // stop reception of message
+                        message_complete = true;
+                    }
+                };
+            }
+
+            // decoding state -----------------------------------------------------
+            // Wait for an edge
+            match select(
+                rx_pin.wait_for_any_edge(),
+                Timer::at(previous_edge.get_timeout_time()),
+            )
+            .await
+            {
                 Either::First(_) => {
+                    // Update the current edge instantly with the new information
                     current_edge.update(rx_pin.get_level());
+
+                    //2T since last edge
                     if current_edge.time.duration_since(previous_edge.time)
                         > BIT_PERIOD_LOWER_TOLERANCE
+                        && current_edge.time.duration_since(previous_edge.time)
+                            < BIT_PERIOD_UPPER_TOLERANCE
                     {
-                        previous_edge = current_edge;
-                        read_bit = current_edge.level;
-                        // exit "begin transmission state"
-                        // enter "decoding state"
-                    } else {
-                        // stay in "begin transmission state"
+                        //Send the line value
+                        rx_iter.next().unwrap().commit(current_edge.level.into());
+                        //Cycle the edge for next decode
+                        current_edge = previous_edge
+                        //Loop back to beginning
+                    }
+                    //T since last edge
+                    else if current_edge.time.duration_since(previous_edge.time)
+                        > HALF_BIT_PERIOD_LOWER_TOLERANCE
+                        && current_edge.time.duration_since(previous_edge.time)
+                            < HALF_BIT_PERIOD_UPPER_TOLERANCE
+                    {
+                        match select(
+                            rx_pin.wait_for_any_edge(),
+                            Timer::at(previous_edge.get_timeout_time()),
+                        )
+                        .await
+                        {
+                            Either::First(_) => {
+                                current_edge.update(rx_pin.get_level());
+                                if current_edge.time.duration_since(previous_edge.time)
+                                    > HALF_BIT_PERIOD_LOWER_TOLERANCE
+                                    && current_edge.time.duration_since(previous_edge.time)
+                                        < HALF_BIT_PERIOD_UPPER_TOLERANCE
+                                {
+                                    //We're safe
+
+                                    //Send the line value
+                                    rx_iter.next().unwrap().commit(current_edge.level.into());
+                                    //Cycle the edge for next decode
+                                    current_edge = previous_edge
+                                    //Loop back to beginning
+                                } else {
+                                    //Invalid data, stop reception
+                                    message_complete = true;
+                                }
+                            }
+
+                            Either::Second(_) => {
+                                line_state = previous_edge.get_timeout_state();
+                                //Stop receiving the transmission
+                                message_complete = true;
+                            }
+                        }
+                    }
+                    //Non-valid time since last edge
+                    else {
+                        //Invalid data, stop reception
                     }
                 }
+
                 Either::Second(_) => {
                     line_state = previous_edge.get_timeout_state();
-                }
-            };
-        }
-
-        // decoding state -----------------------------------------------------
-        // Wait for an edge
-        match select(rx_pin.wait_for_any_edge(), Timer::at(previous_edge.get_timeout_time())).await {
-
-             Either::First(_) => {
-                // Update the current edge instantly with the new information
-                current_edge.update(rx_pin.get_level());
-                // 2T
-                
-                // T
-
-                // invalid
-
-                //2T since last edge
-                if current_edge.time.duration_since(previous_edge.time) > BIT_PERIOD_LOWER_TOLERANCE && current_edge.time.duration_since(previous_edge.time) < BIT_PERIOD_UPPER_TOLERANCE{
-                    //Send the line value
-                    read_bit = rx_pin.get_level();
-                    //Cycle the edge for next decode
-                    current_edge = previous_edge
-                    //Loop back to beginning
-                }
-                //T since last edge
-                else if current_edge.time.duration_since(previous_edge.time) > HALF_BIT_PERIOD_LOWER_TOLERANCE && current_edge.time.duration_since(previous_edge.time) < HALF_BIT_PERIOD_UPPER_TOLERANCE {
-                    match select(rx_pin.wait_for_any_edge(), Timer::at(previous_edge.get_timeout_time())).await {
-                        Either::First(_) => {
-                            current_edge.update(rx_pin.get_level());
-                            if current_edge.time.duration_since(previous_edge.time) > HALF_BIT_PERIOD_LOWER_TOLERANCE && current_edge.time.duration_since(previous_edge.time) < HALF_BIT_PERIOD_UPPER_TOLERANCE {
-                                //We're safe
-
-                                //Send the line value
-                                read_bit = rx_pin.get_level();
-                                //Cycle the edge for next decode
-                                current_edge = previous_edge
-                                //Loop back to beginning
-                            }
-                            else {
-                                //Invalid data, stop reception
-                            }
-                        }
-
-                        Either::Second(_) => {
-                            line_state = previous_edge.get_timeout_state();
-                            //Stop receiving the transmission
-                        }
-                    }
-                }
-                //Non-valid time since last edge
-                else{
-                    //Invalid data, stop reception
+                    STATE_SIGNAL.signal(previous_edge.get_timeout_state());
+                    //Stop receiving the transmission
+                    message_complete = true;
                 }
             }
 
-            Either::Second(_) => {
-                line_state = previous_edge.get_timeout_state();
-                //Stop receiving the transmission
-            }
-        
-
-        }
-
-        // match rx_pin.get_level() {
-        //     Level::High => {
-        //         match select(
-        //             Timer::after_micros(IDLE_CUTOFF),
-        //             rx_pin.wait_for_falling_edge(),
-        //         )
-        //         .await
-        //         {
-        //             Either::First(_) => {
-        //                 // line has gone idle
-        //                 //info!("IDLE");
-        //                 line_state = LineCondition::Idle;
-        //                 STATE_SIGNAL.signal(LineCondition::Idle);
-        //                 set_status_leds(
-        //                     &mut idle_led,
-        //                     &mut busy_led,
-        //                     &mut collision_led,
-        //                     line_state,
-        //                 );
-        //                 // wait for the line to fall before continuing
-        //                 rx_pin.wait_for_falling_edge().await;
-        //             }
-        //             Either::Second(_) => {
-        //                 // got a falling edge, so we're busy again
-        //                 continue;
-        //             }
-        //         }
-        //     }
-        //     Level::Low => {
-        //         // info!("BUSY");
-        //         line_state = LineCondition::Busy;
-        //         STATE_SIGNAL.signal(LineCondition::Busy);
-        //         set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
-        //         match select(
-        //             Timer::after_micros(COLLISION_CUTOFF),
-        //             rx_pin.wait_for_rising_edge(),
-        //         )
-        //         .await
-        //         {
-        //             Either::First(_) => {
-        //                 // the collision timeout triggered
-        //                 //info!("COLLISION");
-        //                 line_state = LineCondition::Collision;
-        //                 STATE_SIGNAL.signal(LineCondition::Collision);
-        //                 set_status_leds(
-        //                     &mut idle_led,
-        //                     &mut busy_led,
-        //                     &mut collision_led,
-        //                     line_state,
-        //                 );
-        //                 // wait for the line to exit the collision state
-        //                 rx_pin.wait_for_rising_edge().await; // this will need a refactor to support the random backoffs later
-        //             }
-        //             Either::Second(_) => {
-        //                 // keep line marked as busy
-        //                 continue;
-        //             }
-        //         }
-        //     }
-        // }
-    }
+        } // end of inner loop
+        info!("{}", rx_buf);
+    } // end of outer loop
 }
 
 #[embassy_executor::task]
@@ -483,7 +455,7 @@ async fn uart_task(
             };
             info!("writing to pipe");
             pipe_writer.write_all(transmission).await.unwrap();
-            pipe_writer.write_all(transmission).await.unwrap(); 
+            pipe_writer.write_all(transmission).await.unwrap();
             info!("writing: enter pushed");
             index = 0;
         }
