@@ -80,11 +80,12 @@ const HALF_BIT_PERIOD_UPPER_TOLERANCE: Duration = Duration::from_micros(
 const HALF_BIT_PERIOD_LOWER_TOLERANCE: Duration = Duration::from_micros(
     HALF_BIT_PERIOD.as_micros() - ((HALF_BIT_PERIOD.as_micros() as f64 * PERIOD_TOLERANCE) as u64),
 );
+const TX_HALF_BIT_PERIOD: Duration = HALF_BIT_PERIOD;
 const IDLE_CUTOFF: Duration = Duration::from_micros(1150);
 const COLLISION_CUTOFF: Duration = Duration::from_micros(1110);
 
 const NULLS_COMMAND: &[u8] = b"\\nulls";
-const NULLS_PAYLOAD: &[u8] = &[0u8; 255];
+const NULLS_PAYLOAD: &[u8] = &[0u8; 30];
 const NULLS_PRE_COMMAND: &[u8] = b"\\nullspre";
 const NULLS_PRE_PAYLOAD: &[u8] = b"\x55\0\0\0\0\0\0\0\0";
 const ECONOMY_COMMAND: &[u8] = b"\\economy";
@@ -96,9 +97,9 @@ const POUND_PAYLOAD: &[u8] = b"\x55\xa3";
 const LONG_COMMAND: &[u8] = b"\\long";
 const LONG_PAYLOAD: &[u8] = b"Udsfkghfdlgdjfgo;irxgdjomgixrdlkfdfjdrlmgidfjggkjxfvxilrdjgxldfigjdnrgfldgkmxdivjfligjcfmkdj.stp9ergsgleirhg438r7tous85etj4w98r23uorjew8rm43fj488nto7ewmtw357i4omtw5ex9xwu5o8txj3o874i273z6tvy235rv247rc48xri39t,reim4ctx,xjowirjxt498txexworixremtojisdkkk";
 const FIVES_COMMAND: &[u8] = b"\\fives";
-const FIVES_PAYLOAD: &[u8] = &[0x55u8; 255];
+const FIVES_PAYLOAD: &[u8] = &[0x55u8; 30];
 const ONES_COMMAND: &[u8] = b"\\ones";
-const ONES_PAYLOAD: &[u8] = &[0xFFu8; 255];
+const ONES_PAYLOAD: &[u8] = &[0xFFu8; 30];
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
@@ -413,6 +414,7 @@ async fn main(spawner: Spawner) -> ! {
             "message finished: {}",
             core::str::from_utf8(&rx_buf[1..]).unwrap()
         );
+        info!("{}", rx_buf);
 
         pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
         Timer::after_millis(100).await;
@@ -442,7 +444,7 @@ async fn collision_handling_tx(
 ) {
     //info!("starting collision handling tx");
     let mut buf = [0u8; 256];
-    let mut tx_ticker = Ticker::every(HALF_BIT_PERIOD);
+    let mut tx_ticker = Ticker::every(TX_HALF_BIT_PERIOD);
 
     loop {
         let n = reader.read(&mut buf).await;
@@ -557,6 +559,7 @@ async fn uart_task(
                 POUND_COMMAND => POUND_PAYLOAD,
                 ECONOMY_COMMAND => ECONOMY_PAYLOAD,
                 FIVES_COMMAND => FIVES_PAYLOAD,
+                ONES_COMMAND => ONES_PAYLOAD,
                 _ => message,
             };
             //info!("writing to pipe");
