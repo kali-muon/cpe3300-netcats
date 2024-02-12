@@ -12,8 +12,11 @@ use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
 use embassy_stm32::gpio::OutputOpenDrain;
+use embassy_stm32::gpio::OutputType;
 use embassy_stm32::peripherals::PC13;
 use embassy_stm32::time::Hertz;
+use embassy_stm32::timer::simple_pwm::PwmPin;
+use embassy_stm32::timer::simple_pwm::SimplePwm;
 use embassy_stm32::usart::RingBufferedUartRx;
 use embassy_stm32::usart::UartRx;
 use embassy_stm32::Config;
@@ -185,11 +188,17 @@ async fn main(spawner: Spawner) -> ! {
         usart_config,
     )
     .unwrap();
-    let (_tx, mut rx) = uart.split();
+    let (mut _tx, mut rx) = uart.split();
 
     let pipe: &'static mut Pipe<NoopRawMutex, 256> =
         STATIC_PIPE.init(Pipe::<NoopRawMutex, 256>::new());
     let (reader, writer) = pipe.split();
+
+    let ch1 = PwmPin::new_ch1(p.PB4, OutputType::PushPull);
+    let mut pwm = SimplePwm::new(p.TIM3, Some(ch1), None, None, None, embassy_stm32::time::hz(1000), Default::default());
+    let max = pwm.get_max_duty();
+    pwm.enable(embassy_stm32::timer::Channel::Ch1);
+    pwm.set_duty(embassy_stm32::timer::Channel::Ch1, 0);
 
     spawner.spawn(uart_task(rx, writer.clone())).unwrap();
     spawner
@@ -409,6 +418,11 @@ async fn main(spawner: Spawner) -> ! {
         } // end of inner loop
         info!("message finished:");
         info!("message finished: {}", core::str::from_utf8(&rx_buf).unwrap());
+
+        pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
+        Timer::after_millis(100).await;
+        pwm.set_duty(embassy_stm32::timer::Channel::Ch1, 0);
+
         // info!("message finished");
     } // end of outer loop
 }
