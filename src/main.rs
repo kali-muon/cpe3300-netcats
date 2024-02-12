@@ -2,6 +2,8 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+use core::str;
+
 use bitvec::prelude::*;
 use bitvec::slice::BitRefIter;
 use cortex_m::register::basepri::read;
@@ -95,10 +97,16 @@ const COLLISION_CUTOFF: Duration = Duration::from_micros(1110);
 
 const NULLS_COMMAND: &[u8] = b"\\nulls";
 const NULLS_PAYLOAD: &[u8] = b"\0\0\0\0\0\0\0\0";
+const NULLS_PRE_COMMAND: &[u8] = b"\\nullspre";
+const NULLS_PRE_PAYLOAD: &[u8] = b"\x55\0\0\0\0\0\0\0\0";
+const ECONOMY_COMMAND: &[u8] = b"\\economy";
+const ECONOMY_PAYLOAD: &[u8] = b"\x55\0\0\0\0\0\0\0\0\x07i love the economy";
 const AA_COMMAND: &[u8] = b"\\aa";
 const AA_PAYLOAD: &[u8] = b"\xaa";
+const POUND_COMMAND: &[u8] = b"\\pound";
+const POUND_PAYLOAD: &[u8] = b"\x55\xa3";
 const LONG_COMMAND: &[u8] = b"\\long";
-const LONG_PAYLOAD: &[u8] = b"dsfkghfdlgdjfgo;irxgdjomgixrdlkfdfjdrlmgidfjggkjxfvxilrdjgxldfigjdnrgfldgkmxdivjfligjcfmkdj.stp9ergsgleirhg438r7tous85etj4w98r23uorjew8rm43fj488nto7ewmtw357i4omtw5ex9xwu5o8txj3o874i273z6tvy235rv247rc48xri39t,reim4ctx,xjowirjxt498txexworixremtojisdkkk";
+const LONG_PAYLOAD: &[u8] = b"Udsfkghfdlgdjfgo;irxgdjomgixrdlkfdfjdrlmgidfjggkjxfvxilrdjgxldfigjdnrgfldgkmxdivjfligjcfmkdj.stp9ergsgleirhg438r7tous85etj4w98r23uorjew8rm43fj488nto7ewmtw357i4omtw5ex9xwu5o8txj3o874i273z6tvy235rv247rc48xri39t,reim4ctx,xjowirjxt498txexworixremtojisdkkk";
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
@@ -212,55 +220,78 @@ async fn main(spawner: Spawner) -> ! {
         let rx_bits: &mut BitSlice<_, Msb0> = BitSlice::from_slice_mut(&mut rx_buf);
         let mut rx_iter = rx_bits.iter_mut();
         let mut message_complete: bool = false;
-        {
-            // "begin transmission" state
-            // Assume we begin in idle state
-            info!("waiting for message to start");
-            rx_pin.wait_for_falling_edge().await;
-            previous_edge.update(rx_pin.get_level());
-            line_state = LineCondition::Busy;
-            set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
-            STATE_SIGNAL.signal(line_state);
-            info!("got the first falling edge");
-            let mut synchronized: bool = false;
-            // now we are out of idle
-            while !synchronized && !message_complete {
-                let timeout_time = previous_edge.get_timeout_time(); // sets the collision cutoff
-                match select(rx_pin.wait_for_any_edge(), Timer::at(timeout_time)).await {
-                    Either::First(_) => {
-                        current_edge.update(rx_pin.get_level());
-                        if current_edge.time.duration_since(previous_edge.time)
-                            > BIT_PERIOD_LOWER_TOLERANCE
-                        {
-                            previous_edge = current_edge;
-                            read_bit = current_edge.level;
-                            // exit "begin transmission state"
-                            synchronized = true;
-                            info!("synchronized");
-                            // enter "decoding state"
-                        } else {
-                            info!("not synchronized yet");
-                            // stay in "begin transmission state"
-                        }
+        rx_iter.next().unwrap().commit(false);
+        rx_iter.next().unwrap().commit(true);
+
+        match select(rx_pin.wait_for_falling_edge(), Timer::at(current_edge.get_timeout_time())).await {
+            Either::First(_) => {
+                // continue
+            },
+            Either::Second(_) => {
+                // set to idle
+                // wait for falling edge
+                line_state = LineCondition::Idle;
+                STATE_SIGNAL.signal(line_state);
+                set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
+                info!("waiting for message to start");
+                rx_pin.wait_for_falling_edge().await;
+            },
+        }
+
+        // now we are out of idle
+        // "begin transmission" state
+        previous_edge.update(rx_pin.get_level());
+        line_state = LineCondition::Busy;
+        STATE_SIGNAL.signal(line_state);
+        set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
+        info!("got the first falling edge");
+        let mut synchronized: bool = false;
+
+        while !synchronized && !message_complete {
+            let timeout_time = previous_edge.get_timeout_time(); // sets the collision cutoff
+            match select(rx_pin.wait_for_any_edge(), Timer::at(timeout_time)).await {
+                Either::First(_) => {
+                    current_edge.update(rx_pin.get_level());
+                    if current_edge.time.duration_since(previous_edge.time)
+                        > BIT_PERIOD_LOWER_TOLERANCE
+                    {
+                        // exit "begin transmission state"
+                        synchronized = true;
+                        info!("synchronized");
+                        // enter "decoding state"
+                    } else {
+                        info!("not synchronized yet");
+                        // stay in "begin transmission state"
                     }
-                    Either::Second(_) => {
-                        line_state = previous_edge.get_timeout_state();
-                        set_status_leds(
-                            &mut idle_led,
-                            &mut busy_led,
-                            &mut collision_led,
-                            line_state,
-                        );
-                        STATE_SIGNAL.signal(line_state);
-                        // stop reception of message
-                        message_complete = true;
-                        info!(
-                            "collision while synchronizing\nare we collision?: {}",
-                            (line_state == LineCondition::Collision)
-                        );
-                    }
-                };
-            }
+                    line_state = LineCondition::Busy;
+                    STATE_SIGNAL.signal(line_state);
+                    set_status_leds(
+                        &mut idle_led,
+                        &mut busy_led,
+                        &mut collision_led,
+                        line_state,
+                    );
+                    previous_edge = current_edge;
+                }
+                Either::Second(_) => {
+                    line_state = previous_edge.get_timeout_state();
+                    STATE_SIGNAL.signal(line_state);
+                    set_status_leds(
+                        &mut idle_led,
+                        &mut busy_led,
+                        &mut collision_led,
+                        line_state,
+                    );
+                    // stop reception of message
+                    message_complete = true;
+                    info!(
+                        "collision while synchronizing\ncurrent state: {}", line_state
+                    );
+                    rx_pin.wait_for_rising_edge().await;
+                    previous_edge = current_edge;
+                    current_edge.update(rx_pin.get_level());
+                }
+            };
         }
         if !message_complete {
             info!("entering decoding loop");
@@ -270,7 +301,7 @@ async fn main(spawner: Spawner) -> ! {
 
             // decoding state -----------------------------------------------------
             // Wait for an edge
-            info!("waiting for next bit");
+            info!("waiting for next bit period");
             match select(
                 rx_pin.wait_for_any_edge(),
                 Timer::at(previous_edge.get_timeout_time()),
@@ -285,22 +316,25 @@ async fn main(spawner: Spawner) -> ! {
                     //2T since last edge
                     if current_edge.time.duration_since(previous_edge.time)
                         > BIT_PERIOD_LOWER_TOLERANCE
-                        && current_edge.time.duration_since(previous_edge.time)
-                            < BIT_PERIOD_UPPER_TOLERANCE
+                        // && current_edge.time.duration_since(previous_edge.time)
+                        //     < BIT_PERIOD_UPPER_TOLERANCE
                     {
                         //Send the line value
                         rx_iter.next().unwrap().commit(current_edge.level.into());
                         info!("wrote bit: {}", current_edge.level);
                         //Cycle the edge for next decode
-                        current_edge = previous_edge;
+                        // current_edge = previous_edge;
+                        previous_edge = current_edge;
                         //Loop back to beginning
                     }
-                    //T since last edge
+                    //T since last edge (half bit period)
                     else if current_edge.time.duration_since(previous_edge.time)
                         > HALF_BIT_PERIOD_LOWER_TOLERANCE
                         && current_edge.time.duration_since(previous_edge.time)
                             < HALF_BIT_PERIOD_UPPER_TOLERANCE
                     {
+                        info!("waiting for next half bit period");
+                        // previous_edge = current_edge;
                         match select(
                             // wait for next half bit period
                             rx_pin.wait_for_any_edge(),
@@ -311,10 +345,14 @@ async fn main(spawner: Spawner) -> ! {
                             Either::First(_) => {
                                 // edge triggered
                                 current_edge.update(rx_pin.get_level());
+                                // if current_edge.time.duration_since(previous_edge.time)
+                                //     > HALF_BIT_PERIOD_LOWER_TOLERANCE
+                                //     && current_edge.time.duration_since(previous_edge.time)
+                                //         < HALF_BIT_PERIOD_UPPER_TOLERANCE
                                 if current_edge.time.duration_since(previous_edge.time)
-                                    > HALF_BIT_PERIOD_LOWER_TOLERANCE
+                                    > BIT_PERIOD_LOWER_TOLERANCE
                                     && current_edge.time.duration_since(previous_edge.time)
-                                        < HALF_BIT_PERIOD_UPPER_TOLERANCE
+                                        < BIT_PERIOD_UPPER_TOLERANCE
                                 {
                                     //We're safe, received half a bit period
 
@@ -322,9 +360,10 @@ async fn main(spawner: Spawner) -> ! {
                                     rx_iter.next().unwrap().commit(current_edge.level.into());
                                     info!("wrote bit: {}", current_edge.level);
                                     //Cycle the edge for next decode
-                                    current_edge = previous_edge;
+                                    previous_edge = current_edge;
                                     //Loop back to beginning
                                 } else {
+                                    info!("received a full bit period after a half");
                                     // We received a full bit period, so invalid data, stop reception
                                     message_complete = true;
                                 }
@@ -348,6 +387,8 @@ async fn main(spawner: Spawner) -> ! {
                     }
                     //Non-valid time since last edge
                     else {
+                        info!("invalid time since last edge");
+                        previous_edge = current_edge;
                         //Invalid data, stop reception
                     }
                 }
@@ -357,13 +398,18 @@ async fn main(spawner: Spawner) -> ! {
                     set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
                     STATE_SIGNAL.signal(line_state);
                     info!("timeout on same output: {}", line_state);
+                    if line_state == LineCondition::Collision {
+                        rx_pin.wait_for_rising_edge().await;
+                        current_edge.update(rx_pin.get_level());
+                    }
                     //Stop receiving the transmission
                     message_complete = true;
                 }
             }
         } // end of inner loop
-          // info!("message finished: {}", rx_buf);
-        info!("message finished");
+        info!("message finished:");
+        info!("message finished: {}", core::str::from_utf8(&rx_buf).unwrap());
+        // info!("message finished");
     } // end of outer loop
 }
 
@@ -491,12 +537,14 @@ async fn uart_task(
             let message = &sending_buf[..index - 1]; // -1 to strip carriage return
             let transmission = match message {
                 NULLS_COMMAND => NULLS_PAYLOAD,
+                NULLS_PRE_COMMAND => NULLS_PRE_PAYLOAD,
                 AA_COMMAND => AA_PAYLOAD,
                 LONG_COMMAND => LONG_PAYLOAD,
+                POUND_COMMAND => POUND_PAYLOAD,
+                ECONOMY_COMMAND => ECONOMY_PAYLOAD,
                 _ => message,
             };
             info!("writing to pipe");
-            pipe_writer.write_all(transmission).await.unwrap();
             pipe_writer.write_all(transmission).await.unwrap();
             info!("writing: enter pushed");
             index = 0;
