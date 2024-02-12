@@ -63,7 +63,7 @@ impl Edge {
 }
 
 // tolerance is in percent
-const PERIOD_TOLERANCE: f64 = 0.0132;
+const PERIOD_TOLERANCE: f64 = 0.035;
 // all times here are in microseconds
 const BIT_PERIOD_US: u64 = 1000;
 const BIT_PERIOD: Duration = Duration::from_micros(BIT_PERIOD_US);
@@ -80,6 +80,7 @@ const HALF_BIT_PERIOD_UPPER_TOLERANCE: Duration = Duration::from_micros(
 const HALF_BIT_PERIOD_LOWER_TOLERANCE: Duration = Duration::from_micros(
     HALF_BIT_PERIOD.as_micros() - ((HALF_BIT_PERIOD.as_micros() as f64 * PERIOD_TOLERANCE) as u64),
 );
+//const TX_HALF_BIT_PERIOD: Duration = Duration::from_micros(493);
 const TX_HALF_BIT_PERIOD: Duration = HALF_BIT_PERIOD;
 const IDLE_CUTOFF: Duration = Duration::from_micros(1150);
 const COLLISION_CUTOFF: Duration = Duration::from_micros(1110);
@@ -100,6 +101,8 @@ const FIVES_COMMAND: &[u8] = b"\\fives";
 const FIVES_PAYLOAD: &[u8] = &[0x55u8; 30];
 const ONES_COMMAND: &[u8] = b"\\ones";
 const ONES_PAYLOAD: &[u8] = &[0xFFu8; 30];
+
+
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
@@ -416,9 +419,9 @@ async fn main(spawner: Spawner) -> ! {
         );
         info!("{}", rx_buf);
 
-        pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
-        Timer::after_millis(100).await;
-        pwm.set_duty(embassy_stm32::timer::Channel::Ch1, 0);
+        //pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
+        //Timer::after_millis(100).await;
+        //pwm.set_duty(embassy_stm32::timer::Channel::Ch1, 0);
 
         // info!("message finished");
     } // end of outer loop
