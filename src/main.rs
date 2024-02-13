@@ -2,46 +2,31 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-use core::str;
-
 use bitvec::prelude::*;
-use bitvec::slice::BitRefIter;
-use cortex_m::register::basepri::read;
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_futures::select::select;
-use embassy_futures::select::Either;
-use embassy_stm32::gpio::OutputOpenDrain;
-use embassy_stm32::gpio::OutputType;
-use embassy_stm32::peripherals::PC13;
-use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::simple_pwm::PwmPin;
-use embassy_stm32::timer::simple_pwm::SimplePwm;
-use embassy_stm32::usart::RingBufferedUartRx;
-use embassy_stm32::usart::UartRx;
-use embassy_stm32::Config;
+use embassy_futures::select::{select, Either};
 use embassy_stm32::{
     bind_interrupts,
+    dma::NoDma,
     exti::ExtiInput,
-    gpio::{AnyPin, Input, Level, Output, Pull, Speed},
-    peripherals, usart,
+    gpio::{AnyPin, Input, Level, Output, OutputOpenDrain, OutputType, Pull, Speed},
+    peripherals,
+    peripherals::PC13,
+    timer::simple_pwm::{PwmPin, SimplePwm},
+    usart,
+    usart::{Config as UsartConfig, Uart, UartRx},
+    Config,
 };
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::pipe::{Pipe, Reader, Writer};
-use embassy_sync::signal::Signal;
-use embassy_time::Duration;
-use embassy_time::Instant;
-use embassy_time::Ticker;
-use embassy_time::Timer;
-use panic_probe::hard_fault;
-use {defmt_rtt as _, panic_probe as _};
-
-use embassy_stm32::dma::NoDma;
-use embassy_stm32::usart::{Config as UsartConfig, Uart};
-
+use embassy_sync::{
+    blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex},
+    pipe::{Pipe, Reader, Writer},
+    signal::Signal,
+};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::Write;
-
+use panic_probe as _;
 use static_cell::StaticCell;
 
 #[derive(PartialEq, Copy, Clone, Format)]
@@ -99,17 +84,21 @@ const IDLE_CUTOFF: Duration = Duration::from_micros(1150);
 const COLLISION_CUTOFF: Duration = Duration::from_micros(1110);
 
 const NULLS_COMMAND: &[u8] = b"\\nulls";
-const NULLS_PAYLOAD: &[u8] = b"\0\0\0\0\0\0\0\0";
+const NULLS_PAYLOAD: &[u8] = &[0u8; 255];
 const NULLS_PRE_COMMAND: &[u8] = b"\\nullspre";
 const NULLS_PRE_PAYLOAD: &[u8] = b"\x55\0\0\0\0\0\0\0\0";
 const ECONOMY_COMMAND: &[u8] = b"\\economy";
-const ECONOMY_PAYLOAD: &[u8] = b"\x55\0\0\0\0\0\0\0\0\x07i love the economy";
+const ECONOMY_PAYLOAD: &[u8] = b"Hello World. I love the economy!";
 const AA_COMMAND: &[u8] = b"\\aa";
 const AA_PAYLOAD: &[u8] = b"\xaa";
 const POUND_COMMAND: &[u8] = b"\\pound";
 const POUND_PAYLOAD: &[u8] = b"\x55\xa3";
 const LONG_COMMAND: &[u8] = b"\\long";
 const LONG_PAYLOAD: &[u8] = b"Udsfkghfdlgdjfgo;irxgdjomgixrdlkfdfjdrlmgidfjggkjxfvxilrdjgxldfigjdnrgfldgkmxdivjfligjcfmkdj.stp9ergsgleirhg438r7tous85etj4w98r23uorjew8rm43fj488nto7ewmtw357i4omtw5ex9xwu5o8txj3o874i273z6tvy235rv247rc48xri39t,reim4ctx,xjowirjxt498txexworixremtojisdkkk";
+const FIVES_COMMAND: &[u8] = b"\\fives";
+const FIVES_PAYLOAD: &[u8] = &[0x55u8; 255];
+const ONES_COMMAND: &[u8] = b"\\ones";
+const ONES_PAYLOAD: &[u8] = &[0xFFu8; 255];
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
@@ -156,7 +145,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let p = embassy_stm32::init(config); // this does high clock speed
                                          // let p = embassy_stm32::init(Default::default()); // this does low clock speed
-    info!("initialized clocks successfully!");
+    //info!("initialized clocks successfully!");
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
     let mut idle_led = Output::new(p.PB15, Level::Low, Speed::High).degrade();
@@ -195,7 +184,15 @@ async fn main(spawner: Spawner) -> ! {
     let (reader, writer) = pipe.split();
 
     let ch1 = PwmPin::new_ch1(p.PB4, OutputType::PushPull);
-    let mut pwm = SimplePwm::new(p.TIM3, Some(ch1), None, None, None, embassy_stm32::time::hz(1000), Default::default());
+    let mut pwm = SimplePwm::new(
+        p.TIM3,
+        Some(ch1),
+        None,
+        None,
+        None,
+        embassy_stm32::time::hz(1000),
+        Default::default(),
+    );
     let max = pwm.get_max_duty();
     pwm.enable(embassy_stm32::timer::Channel::Ch1);
     pwm.set_duty(embassy_stm32::timer::Channel::Ch1, 0);
@@ -221,9 +218,9 @@ async fn main(spawner: Spawner) -> ! {
     set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
 
     STATE_SIGNAL.signal(line_state);
-    info!("entering outer loop");
+    //info!("entering outer loop");
     loop {
-        info!("top of outer loop");
+        //info!("top of outer loop");
         // loops once for each packet
         let mut rx_buf = [0u8; 320];
         let rx_bits: &mut BitSlice<_, Msb0> = BitSlice::from_slice_mut(&mut rx_buf);
@@ -232,19 +229,24 @@ async fn main(spawner: Spawner) -> ! {
         rx_iter.next().unwrap().commit(false);
         rx_iter.next().unwrap().commit(true);
 
-        match select(rx_pin.wait_for_falling_edge(), Timer::at(current_edge.get_timeout_time())).await {
+        match select(
+            rx_pin.wait_for_falling_edge(),
+            Timer::at(current_edge.get_timeout_time()),
+        )
+        .await
+        {
             Either::First(_) => {
                 // continue
-            },
+            }
             Either::Second(_) => {
                 // set to idle
                 // wait for falling edge
                 line_state = LineCondition::Idle;
                 STATE_SIGNAL.signal(line_state);
                 set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
-                info!("waiting for message to start");
+                //info!("waiting for message to start");
                 rx_pin.wait_for_falling_edge().await;
-            },
+            }
         }
 
         // now we are out of idle
@@ -253,7 +255,7 @@ async fn main(spawner: Spawner) -> ! {
         line_state = LineCondition::Busy;
         STATE_SIGNAL.signal(line_state);
         set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
-        info!("got the first falling edge");
+        //info!("got the first falling edge");
         let mut synchronized: bool = false;
 
         while !synchronized && !message_complete {
@@ -266,36 +268,27 @@ async fn main(spawner: Spawner) -> ! {
                     {
                         // exit "begin transmission state"
                         synchronized = true;
-                        info!("synchronized");
+                        //info!("synchronized");
                         // enter "decoding state"
                     } else {
-                        info!("not synchronized yet");
+                        //info!("not synchronized yet");
                         // stay in "begin transmission state"
                     }
                     line_state = LineCondition::Busy;
                     STATE_SIGNAL.signal(line_state);
-                    set_status_leds(
-                        &mut idle_led,
-                        &mut busy_led,
-                        &mut collision_led,
-                        line_state,
-                    );
+                    set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
                     previous_edge = current_edge;
                 }
                 Either::Second(_) => {
                     line_state = previous_edge.get_timeout_state();
                     STATE_SIGNAL.signal(line_state);
-                    set_status_leds(
-                        &mut idle_led,
-                        &mut busy_led,
-                        &mut collision_led,
-                        line_state,
-                    );
+                    set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
                     // stop reception of message
                     message_complete = true;
-                    info!(
-                        "collision while synchronizing\ncurrent state: {}", line_state
-                    );
+                    //info!(
+                    //    "collision while synchronizing\ncurrent state: {}",
+                    //    line_state
+                    //);
                     rx_pin.wait_for_rising_edge().await;
                     previous_edge = current_edge;
                     current_edge.update(rx_pin.get_level());
@@ -303,14 +296,14 @@ async fn main(spawner: Spawner) -> ! {
             };
         }
         if !message_complete {
-            info!("entering decoding loop");
+            //info!("entering decoding loop");
         }
         while !message_complete {
             // loops while receiving a packet
 
             // decoding state -----------------------------------------------------
             // Wait for an edge
-            info!("waiting for next bit period");
+            //info!("waiting for next bit period");
             match select(
                 rx_pin.wait_for_any_edge(),
                 Timer::at(previous_edge.get_timeout_time()),
@@ -325,12 +318,12 @@ async fn main(spawner: Spawner) -> ! {
                     //2T since last edge
                     if current_edge.time.duration_since(previous_edge.time)
                         > BIT_PERIOD_LOWER_TOLERANCE
-                        // && current_edge.time.duration_since(previous_edge.time)
-                        //     < BIT_PERIOD_UPPER_TOLERANCE
+                    // && current_edge.time.duration_since(previous_edge.time)
+                    //     < BIT_PERIOD_UPPER_TOLERANCE
                     {
                         //Send the line value
                         rx_iter.next().unwrap().commit(current_edge.level.into());
-                        info!("wrote bit: {}", current_edge.level);
+                        //info!("wrote bit: {}", current_edge.level);
                         //Cycle the edge for next decode
                         // current_edge = previous_edge;
                         previous_edge = current_edge;
@@ -342,7 +335,7 @@ async fn main(spawner: Spawner) -> ! {
                         && current_edge.time.duration_since(previous_edge.time)
                             < HALF_BIT_PERIOD_UPPER_TOLERANCE
                     {
-                        info!("waiting for next half bit period");
+                        //info!("waiting for next half bit period");
                         // previous_edge = current_edge;
                         match select(
                             // wait for next half bit period
@@ -367,12 +360,12 @@ async fn main(spawner: Spawner) -> ! {
 
                                     //Send the line value
                                     rx_iter.next().unwrap().commit(current_edge.level.into());
-                                    info!("wrote bit: {}", current_edge.level);
+                                    //info!("wrote bit: {}", current_edge.level);
                                     //Cycle the edge for next decode
                                     previous_edge = current_edge;
                                     //Loop back to beginning
                                 } else {
-                                    info!("received a full bit period after a half");
+                                    //info!("received a full bit period after a half");
                                     // We received a full bit period, so invalid data, stop reception
                                     message_complete = true;
                                 }
@@ -388,7 +381,7 @@ async fn main(spawner: Spawner) -> ! {
                                     line_state,
                                 );
                                 STATE_SIGNAL.signal(line_state);
-                                info!("timeout trying to switch value: {}", line_state);
+                                //info!("timeout trying to switch value: {}", line_state);
                                 //Stop receiving the transmission
                                 message_complete = true;
                             }
@@ -396,7 +389,7 @@ async fn main(spawner: Spawner) -> ! {
                     }
                     //Non-valid time since last edge
                     else {
-                        info!("invalid time since last edge");
+                        //info!("invalid time since last edge");
                         previous_edge = current_edge;
                         //Invalid data, stop reception
                     }
@@ -406,7 +399,7 @@ async fn main(spawner: Spawner) -> ! {
                     line_state = previous_edge.get_timeout_state();
                     set_status_leds(&mut idle_led, &mut busy_led, &mut collision_led, line_state);
                     STATE_SIGNAL.signal(line_state);
-                    info!("timeout on same output: {}", line_state);
+                    //info!("timeout on same output: {}", line_state);
                     if line_state == LineCondition::Collision {
                         rx_pin.wait_for_rising_edge().await;
                         current_edge.update(rx_pin.get_level());
@@ -416,8 +409,10 @@ async fn main(spawner: Spawner) -> ! {
                 }
             }
         } // end of inner loop
-        info!("message finished:");
-        info!("message finished: {}", core::str::from_utf8(&rx_buf).unwrap());
+        info!(
+            "message finished: {}",
+            core::str::from_utf8(&rx_buf[1..]).unwrap()
+        );
 
         pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
         Timer::after_millis(100).await;
@@ -445,18 +440,23 @@ async fn collision_handling_tx(
     mut tx_pin: Output<'static, AnyPin>,
     reader: Reader<'static, NoopRawMutex, 256>,
 ) {
-    info!("starting collision handling tx");
-    let mut tx_buf = [0u8; 256];
+    //info!("starting collision handling tx");
+    let mut buf = [0u8; 256];
     let mut tx_ticker = Ticker::every(HALF_BIT_PERIOD);
 
     loop {
-        let n = reader.read(&mut tx_buf).await;
-        info!("n = {}", n);
+        let n = reader.read(&mut buf).await;
+        let mut tx_buf = [0u8; 257];
+        tx_buf[1..(1 + n)].copy_from_slice(&buf[..n]); // might hard fault
+        tx_buf[0] = 0x55;
+        //info!("Transmittig {} bytes: {}", n+1, tx_buf);
+
+        //info!("n = {}", n);
         // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
-        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..n]);
-        info!("received text");
+        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1+n]);
+        //info!("received text");
         loop {
-            info!("transmitting and waiting");
+            //info!("transmitting and waiting");
             line_condition_wait_until(LineCondition::Idle).await;
             match select(
                 manchester_tx(&mut tx_pin, &mut tx_ticker, &tx_bits),
@@ -465,14 +465,14 @@ async fn collision_handling_tx(
             .await
             {
                 Either::First(_) => {
-                    info!("finished transmititng");
+                    //info!("finished transmititng");
                     break;
                 } // finished
                 Either::Second(_) => {
                     tx_pin.set_high();
                     // back off
                     //continue;
-                    info!("Stopped transmitting due to collision!");
+                    //info!("Stopped transmitting due to collision!");
                     break;
                 }
             }
@@ -482,12 +482,12 @@ async fn collision_handling_tx(
 }
 
 async fn line_condition_wait_until(condition: LineCondition) {
-    info!("entering wait_until");
+    //info!("entering wait_until");
     while STATE_SIGNAL.wait().await != condition {
         STATE_SIGNAL.reset();
     } // exits when signal == condition
     STATE_SIGNAL.reset();
-    info!("exiting wait_until");
+    //info!("exiting wait_until");
 }
 
 async fn manchester_tx(
@@ -495,7 +495,7 @@ async fn manchester_tx(
     ticker: &mut Ticker,
     tx_bits: &BitSlice<u8, Msb0>,
 ) {
-    info!("starting tx");
+    //info!("starting tx");
     ticker.reset(); // prepare the ticker for the transmit
     for b in tx_bits.iter().by_vals() {
         // check state first!!
@@ -521,7 +521,7 @@ async fn manchester_tx(
         }
     }
     tx_pin.set_high();
-    info!("finished tx");
+    //info!("finished tx");
 }
 
 #[embassy_executor::task]
@@ -535,16 +535,16 @@ async fn uart_task(
     let mut index = 0;
     let mut ring_uart = rx.into_ring_buffered(&mut dma_buf);
     loop {
-        info!("waiting for uart");
+        //info!("waiting for uart");
         let number_characters_read = ring_uart.read(&mut read_buf).await.unwrap();
-        info!(
-            "character received\nindex = {}\nnchar = {}",
-            index, number_characters_read
-        );
+        //info!(
+        //    "character received\nindex = {}\nnchar = {}",
+        //    index, number_characters_read
+        //);
         sending_buf[index..index + number_characters_read]
             .copy_from_slice(&read_buf[..number_characters_read]);
         index += number_characters_read;
-        info!("copy from slice successful");
+        //info!("copy from slice successful");
 
         //info!("sucessfully read: {}", read_buf);
         if read_buf.contains(&b'\r') {
@@ -556,11 +556,12 @@ async fn uart_task(
                 LONG_COMMAND => LONG_PAYLOAD,
                 POUND_COMMAND => POUND_PAYLOAD,
                 ECONOMY_COMMAND => ECONOMY_PAYLOAD,
+                FIVES_COMMAND => FIVES_PAYLOAD,
                 _ => message,
             };
-            info!("writing to pipe");
+            //info!("writing to pipe");
             pipe_writer.write_all(transmission).await.unwrap();
-            info!("writing: enter pushed");
+            //info!("writing: enter pushed");
             index = 0;
         }
     }
