@@ -8,15 +8,15 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_stm32::{
+    adc::{AdcPin, Resolution},
     bind_interrupts,
     dma::NoDma,
     exti::ExtiInput,
     gpio::{AnyPin, Input, Level, Output, OutputOpenDrain, OutputType, Pull, Speed},
-    peripherals,
-    peripherals::PC13,
+    pac::adc::Adc,
+    peripherals::{self, PC13},
     timer::simple_pwm::{PwmPin, SimplePwm},
-    usart,
-    usart::{Config as UsartConfig, Uart, UartRx},
+    usart::{self, Config as UsartConfig, Uart, UartRx},
     Config,
 };
 use embassy_sync::{
@@ -102,8 +102,6 @@ const FIVES_PAYLOAD: &[u8] = &[0x55u8; 30];
 const ONES_COMMAND: &[u8] = b"\\ones";
 const ONES_PAYLOAD: &[u8] = &[0xFFu8; 30];
 
-
-
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
 bind_interrupts!(struct Irqs {
@@ -149,7 +147,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let p = embassy_stm32::init(config); // this does high clock speed
                                          // let p = embassy_stm32::init(Default::default()); // this does low clock speed
-    //info!("initialized clocks successfully!");
+                                         //info!("initialized clocks successfully!");
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
     let mut idle_led = Output::new(p.PB15, Level::Low, Speed::High).degrade();
@@ -158,7 +156,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // let mut tx_pin = OutputOpenDrain::new(p.PC6, Level::High, Speed::High, Pull::Down).degrade();
     // let mut tx_pin = Output::new(p.PB9, Level::High, Speed::High).degrade();
-    let mut tx_pin = OutputOpenDrain::new(p.PB9, Level::High, Speed::High, Pull::None).degrade(); // working open drain
+    let mut tx_pin = OutputOpenDrain::new(p.PB9, Level::High, Speed::High, Pull::Up).degrade(); // working open drain
 
     // let rx_pin = Input::new(p.PC8, Pull::Up);
     // let mut rx_pin = ExtiInput::new(rx_pin, p.EXTI8);
@@ -458,11 +456,11 @@ async fn collision_handling_tx(
 
         //info!("n = {}", n);
         // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
-        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1+n]);
+        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1 + n]);
         //info!("received text");
+        line_condition_wait_until(LineCondition::Idle).await;
         loop {
             //info!("transmitting and waiting");
-            line_condition_wait_until(LineCondition::Idle).await;
             match select(
                 manchester_tx(&mut tx_pin, &mut tx_ticker, &tx_bits),
                 line_condition_wait_until(LineCondition::Collision),
@@ -475,10 +473,15 @@ async fn collision_handling_tx(
                 } // finished
                 Either::Second(_) => {
                     tx_pin.set_high();
+                    line_condition_wait_until(LineCondition::Idle).await;
+                    let inst = Instant::now();
+                    let time = inst.as_ticks() % 1000;
+                    Timer::after_millis(time).await;
+
                     // back off
-                    //continue;
+                    continue;
                     //info!("Stopped transmitting due to collision!");
-                    break;
+                    //break;
                 }
             }
         }
