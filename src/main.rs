@@ -411,9 +411,35 @@ async fn main(spawner: Spawner) -> ! {
                 }
             }
         } // end of inner loop
+
+        // lets parse
+        let preamble = rx_buf[0];
+        let source = rx_buf[1];
+        let destination = rx_buf[2];
+        let length = rx_buf[3] as usize;
+        let crc_flag = rx_buf[4];
+        let message = &rx_buf[5..5+length];
+
+        // drop when
+        // * wrong preamble
+        // * destination isn't us
+        // * has a cfc
+
+        if preamble != 0x55 {
+            continue;
+        }
+
+        if destination != 0x24 {
+            continue;
+        }
+
+        if crc_flag != 0 {
+            continue;
+        }
+
         info!(
             "message finished: {}",
-            core::str::from_utf8(&rx_buf[1..]).unwrap()
+            core::str::from_utf8(message).unwrap()
         );
         info!("{}", rx_buf);
 
