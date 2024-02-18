@@ -63,6 +63,7 @@ impl Edge {
 }
 
 struct Packet {
+    preamble: u8,
     source: u8,
     destination: u8,
     length: u8,
@@ -73,6 +74,17 @@ struct Packet {
 
 // tx_bits: &BitSlice<u8, Msb0>,
 impl Packet {
+    fn to_u8_slice(&self, slice: &mut [u8]) -> usize {
+        slice[0] = self.preamble;
+        slice[1] = self.source;
+        slice[2] = self.destination;
+        slice[3] = self.length;
+        slice[4] = self.crc_flag.into();
+        slice[5..5 + self.length as usize].copy_from_slice(&self.message[0..self.length as usize]);
+        slice[5 + self.length as usize] = self.trailer;
+
+        self.length as usize + 6 // 6 is the total number of bytes in the header and trailer
+    }
     fn to_bit_slice(&self, slice: &mut BitSlice<u8, Msb0>) -> u8  {
         // Convert each field to a bitslice
         let source_bits = BitSlice::<u8, Msb0>::from_element(&self.source);
@@ -93,10 +105,33 @@ impl Packet {
         // (five minutes later): "I am in Hell. I am in Hell, and there are no funny animated characters."
         // Kali: "i hate this function. i don't know if i can trust the artificial intelligence."
         // Asher: "I wholeheartedly trust the artificial intelligence. There's no way it can mess up." (foreshadowing???)
-        self.length + 6 // 6 is the total number of bytes in the header and trailer
+        self.length + 5 // 5 is the total number of bytes in the header and trailer
+    }
+    fn new(destination: u8, message: &[u8]) -> (Self, usize) {
+        let mut message_holder = [0u8; 255];
+        let length = message.len().min(255);
+        message_holder[0..length].copy_from_slice(&message[0..length]);
+        let packet = Self {
+            preamble: 0x55,
+            source: DEVICE_ADDRESS,
+            destination,
+            length: length as u8,
+            crc_flag: false,
+            message: message_holder,
+            trailer: TRAILER_NO_CRC,
+        };
+        let mut packet_holder = [0u8; 262];
+        let packet_length = packet.to_u8_slice(&mut packet_holder);
+        (packet, packet_length)
     }
     fn explain_Alan_Wake(&self) {
         println!("Alan Wake is a character from a video game developed by Remedy Entertainment. He is a best-selling thriller novelist suffering from writer's block. He goes on a vacation to the small town of Bright Falls with his wife, Alice, to recover. However, Alice disappears under mysterious circumstances, and Wake finds himself experiencing events from his own novels.");
+    
+        println!("In the game, Wake is forced to confront the supernatural and the darkness that lurks within himself and around the town. He uses a flashlight and other light-based weapons to combat the darkness and the shadowy creatures it spawns.");
+    
+        println!("The game's story is presented in an episodic format, with elements of suspense and psychological thriller, drawing inspiration from TV shows like Twin Peaks and The Twilight Zone.");
+    
+        println!("Alan Wake's journey is not just a physical battle, but a psychological one as well, as he struggles with his own sanity, the mystery of his wife's disappearance, and the very fabric of reality itself.");
     }
         
 }
@@ -153,6 +188,7 @@ static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 const PREAMBLE: u8 = 0x55;
 const DEVICE_ADDRESS: u8 = 0x24;
 const CRC_FLAG: u8 = 0;
+const TRAILER_NO_CRC: u8 = 0xAA;
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
@@ -518,21 +554,26 @@ static STATIC_PIPE: StaticCell<Pipe<NoopRawMutex, 256>> = StaticCell::new();
 async fn collision_handling_tx(
     mut tx_pin: Output<'static, AnyPin>,
     reader: Reader<'static, NoopRawMutex, 256>,
-) {
+) 
+{
     //info!("starting collision handling tx");
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 320];
     let mut tx_ticker = Ticker::every(TX_HALF_BIT_PERIOD);
 
     loop {
         let n = reader.read(&mut buf).await;
-        let mut tx_buf = [0u8; 257];
-        tx_buf[1..(1 + n)].copy_from_slice(&buf[..n]); // might hard fault
-        tx_buf[0] = 0x55;
+        let mut tx_buf = [0u8; 320];
+        let (tx_packet, packet_length) = Packet::new(DEVICE_ADDRESS, &buf[..n]);
+        tx_packet.to_u8_slice(&mut tx_buf);
+
+        // tx_buf[..n].copy_from_slice(&buf[..n]); // might hard fault
+        // tx_buf[0] = 0x55;
         //info!("Transmittig {} bytes: {}", n+1, tx_buf);
 
         //info!("n = {}", n);
         // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
-        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1 + n]);
+        // let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1 + n]);
+        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..packet_length]);
         //info!("received text");
         line_condition_wait_until(LineCondition::Idle).await;
         loop {
