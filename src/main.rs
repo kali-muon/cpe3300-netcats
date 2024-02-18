@@ -550,11 +550,12 @@ async fn collision_handling_tx(
                 Either::Second(_) => {
                     tx_pin.set_high();
                     line_condition_wait_until(LineCondition::Idle).await;
+
+                    // random backoff
                     let inst = Instant::now();
                     let time = inst.as_ticks() % 1000;
                     Timer::after_millis(time).await;
 
-                    // back off
                     continue;
                     //info!("Stopped transmitting due to collision!");
                     //break;
