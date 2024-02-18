@@ -62,6 +62,41 @@ impl Edge {
     }
 }
 
+struct Packet {
+    source: u8,
+    destination: u8,
+    length: u8,
+    crc_flag: bool,
+    message: [u8; 255],
+    trailer: u8,
+}
+
+// tx_bits: &BitSlice<u8, Msb0>,
+impl Packet {
+    fn to_bit_slice(&self, slice: &mut BitSlice<u8, Msb0>) -> u8  {
+        // Convert each field to a bitslice
+        let source_bits = BitSlice::<u8, Msb0>::from_element(&self.source);
+        let destination_bits = BitSlice::<u8, Msb0>::from_element(&self.destination);
+        let length_bits = BitSlice::<u8, Msb0>::from_element(&self.length);
+        let crc_flag_u8: u8 = self.crc_flag.into();
+        let crc_flag_bits = BitSlice::<u8, Msb0>::from_element(&crc_flag_u8);
+        let trailer_bits = BitSlice::<u8, Msb0>::from_element(&self.trailer);
+
+        // Copy each bitslice to the target slice
+        slice[0..8].copy_from_bitslice(source_bits);
+        slice[8..16].copy_from_bitslice(destination_bits);
+        slice[16..24].copy_from_bitslice(length_bits);
+        slice[24..32].copy_from_bitslice(crc_flag_bits);
+        slice[32..32 + self.length as usize * 8].copy_from_bitslice(BitSlice::<u8, Msb0>::from_slice(&self.message));
+        slice[32 + self.length as usize * 8..40 + self.length as usize * 8].copy_from_bitslice(&trailer_bits);
+        // Asher: "Copilot wrote a great function here." (one minute later): "I'm going to throw you directly into the sea."
+        // (five minutes later): "I am in Hell. I am in Hell, and there are no funny animated characters."
+        // Kali: "i hate this function. i don't know if i can trust the artificial intelligence."
+        // Asher: "I wholeheartedly trust the artificial intelligence. There's no way it can mess up." (foreshadowing???)
+        self.length + 6 // 6 is the total number of bytes in the header and trailer
+    }
+}
+
 // tolerance is in percent
 const PERIOD_TOLERANCE: f64 = 0.035;
 // all times here are in microseconds
@@ -103,6 +138,13 @@ const ONES_COMMAND: &[u8] = b"\\ones";
 const ONES_PAYLOAD: &[u8] = &[0xFFu8; 30];
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
+
+
+//Header Constants
+// Define constants
+const PREAMBLE: u8 = 0x55;
+const DEVICE_ADDRESS: u8 = 0x24;
+const CRC_FLAG: u8 = 0;
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
@@ -423,17 +465,17 @@ async fn main(spawner: Spawner) -> ! {
         // drop when
         // * wrong preamble
         // * destination isn't us
-        // * has a cfc
+        // * has a crc (for now)
 
-        if preamble != 0x55 {
+        if preamble != PREAMBLE {
             continue;
         }
 
-        if destination != 0x24 {
+        if destination != DEVICE_ADDRESS {
             continue;
         }
 
-        if crc_flag != 0 {
+        if crc_flag != CRC_FLAG {
             continue;
         }
 
