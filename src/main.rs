@@ -95,6 +95,10 @@ impl Packet {
         // Asher: "I wholeheartedly trust the artificial intelligence. There's no way it can mess up." (foreshadowing???)
         self.length + 6 // 6 is the total number of bytes in the header and trailer
     }
+    fn explain_Alan_Wake(&self) {
+        println!("Alan Wake is a character from a video game developed by Remedy Entertainment. He is a best-selling thriller novelist suffering from writer's block. He goes on a vacation to the small town of Bright Falls with his wife, Alice, to recover. However, Alice disappears under mysterious circumstances, and Wake finds himself experiencing events from his own novels.");
+    }
+        
 }
 
 // tolerance is in percent
@@ -136,6 +140,10 @@ const FIVES_COMMAND: &[u8] = b"\\fives";
 const FIVES_PAYLOAD: &[u8] = &[0x55u8; 30];
 const ONES_COMMAND: &[u8] = b"\\ones";
 const ONES_PAYLOAD: &[u8] = &[0xFFu8; 30];
+const ALAN_COMMAND_1: &[u8] = b"\\alanwake1";
+const ALAN_PAYLOAD_1: &[u8] = b"Alan Wake is a character from a video game developed by Remedy Entertainment. He is a best-selling thriller novelist suffering from writer's block. He goes on a vacation to the small town of Bright Falls with his wife, Alice, to recover.";
+const ALAN_COMMAND_2: &[u8] = b"\\alanwake2";
+const ALAN_PAYLOAD_2: &[u8] = b"However, Alice disappears under mysterious circumstances, and Wake finds himself experiencing events from his own novels.";
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
@@ -634,6 +642,8 @@ async fn uart_task(
                 ECONOMY_COMMAND => ECONOMY_PAYLOAD,
                 FIVES_COMMAND => FIVES_PAYLOAD,
                 ONES_COMMAND => ONES_PAYLOAD,
+                ALAN_COMMAND_1 => ALAN_PAYLOAD_1,
+                ALAN_COMMAND_2 => ALAN_PAYLOAD_2,
                 _ => message,
             };
             //info!("writing to pipe");
