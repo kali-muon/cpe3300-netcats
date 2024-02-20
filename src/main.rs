@@ -535,13 +535,14 @@ async fn main(spawner: Spawner) -> ! {
         let destination = rx_buf[2];
         let length = rx_buf[3] as usize;
 
-        if length + 5 != bits_read / 8 {
+        if length + 6 != bits_read / 8 {
             info!("Mismatched packet indicated length and bytes read... dropping packet");
+            continue;
         }
 
         let crc_flag = rx_buf[4];
         let message = &rx_buf[5..5+length];
-        let _cfc = rx_buf[6+length];
+        let _crc = rx_buf[6+length];
 
         // drop when
         // * wrong preamble
@@ -554,6 +555,7 @@ async fn main(spawner: Spawner) -> ! {
         }
 
         if destination != DEVICE_ADDRESS {
+            info!("Not our packet: Dropping");
             continue;
         }
 
