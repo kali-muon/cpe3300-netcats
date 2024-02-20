@@ -1,5 +1,13 @@
-message to convert to CSV (preamble automatically added):
+DIO  2
 1
+1
+1
+1
+1
+1
+1
+1
+1
 0
 0
 1
@@ -13,8 +21,12 @@ message to convert to CSV (preamble automatically added):
 1
 1
 0
+0
+1
+1
 0
 1
+0
 1
 0
 1
@@ -25,6 +37,8 @@ message to convert to CSV (preamble automatically added):
 0
 1
 0
+0
+1
 1
 0
 1
@@ -41,15 +55,23 @@ message to convert to CSV (preamble automatically added):
 0
 1
 0
+1
+0
+1
 0
 1
+0
+1
+0
 1
 0
 1
 0
 1
+0
 0
 1
+1
 0
 1
 0
@@ -59,8 +81,10 @@ message to convert to CSV (preamble automatically added):
 0
 1
 0
+1
 0
 1
+0
 0
 1
 1
@@ -255,8 +279,6 @@ message to convert to CSV (preamble automatically added):
 0
 0
 1
-1
-0
 0
 1
 1
@@ -271,4 +293,5 @@ message to convert to CSV (preamble automatically added):
 0
 0
 1
-
+1
+0
