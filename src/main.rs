@@ -342,6 +342,7 @@ async fn main(spawner: Spawner) -> ! {
         let rx_bits: &mut BitSlice<_, Msb0> = BitSlice::from_slice_mut(&mut rx_buf);
         let mut rx_iter = rx_bits.iter_mut();
         let mut message_complete: bool = false;
+        let mut bits_read: usize = 2;
         rx_iter.next().unwrap().commit(false);
         rx_iter.next().unwrap().commit(true);
 
@@ -439,6 +440,7 @@ async fn main(spawner: Spawner) -> ! {
                     {
                         //Send the line value
                         rx_iter.next().unwrap().commit(current_edge.level.into());
+                        bits_read += 1;
                         //info!("wrote bit: {}", current_edge.level);
                         //Cycle the edge for next decode
                         // current_edge = previous_edge;
@@ -476,6 +478,7 @@ async fn main(spawner: Spawner) -> ! {
 
                                     //Send the line value
                                     rx_iter.next().unwrap().commit(current_edge.level.into());
+                                    bits_read += 1;
                                     //info!("wrote bit: {}", current_edge.level);
                                     //Cycle the edge for next decode
                                     previous_edge = current_edge;
@@ -531,8 +534,14 @@ async fn main(spawner: Spawner) -> ! {
         let source = rx_buf[1];
         let destination = rx_buf[2];
         let length = rx_buf[3] as usize;
+
+        if length + 5 != bits_read / 8 {
+            info!("Mismatched packet indicated length and bytes read... dropping packet");
+        }
+
         let crc_flag = rx_buf[4];
         let message = &rx_buf[5..5+length];
+        let _cfc = rx_buf[6+length];
 
         // drop when
         // * wrong preamble
@@ -540,6 +549,7 @@ async fn main(spawner: Spawner) -> ! {
         // * has a crc (for now)
 
         if preamble != PREAMBLE {
+            info!("Incorrect Preamble: Dropping Packet");
             continue;
         }
 
@@ -548,7 +558,7 @@ async fn main(spawner: Spawner) -> ! {
         }
 
         if crc_flag != CRC_FLAG {
-            continue;
+            warn!("Unckecked CRC field... continuing as if passed check");
         }
 
         info!(
