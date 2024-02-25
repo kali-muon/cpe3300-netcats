@@ -567,7 +567,7 @@ async fn main(spawner: Spawner) -> ! {
             "message finished: {}",
             core::str::from_utf8(message).unwrap()
         );
-        info!("{}", rx_buf);
+        info!("{}", rx_buf[..6+length]);
 
         //pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
         //Timer::after_millis(100).await;
@@ -604,7 +604,7 @@ async fn collision_handling_tx(
         let n = reader.read(&mut buf).await;
         let mut tx_buf = [0u8; 320];
         let (tx_packet, packet_length) = match &buf[..2] {
-            b"\\" => Packet::new(0x1e, &buf[2..n]), // changes the receive address when packet starts with "\\". this is temporary for milestone 4
+            b"\\\\" => Packet::new(0x1e, &buf[2..n]), // changes the receive address when packet starts with "\\". this is temporary for milestone 4
             _ => Packet::new(DEVICE_ADDRESS, &buf[..n]),
         };
         tx_packet.to_u8_slice(&mut tx_buf);
