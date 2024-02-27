@@ -581,7 +581,10 @@ async fn main(spawner: Spawner) -> ! {
                 }
             },
             0 => {
-                info!("CRC Flag not set: Not checking CRC");
+                if crc != TRAILER_NO_CRC {
+                    continue;
+                }
+                //info!("CRC Flag not set: Not checking CRC");
             },
             _ => {
                 info!("Invalid CRC Flag: Dropping Packet");
