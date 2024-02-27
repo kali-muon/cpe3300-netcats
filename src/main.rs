@@ -1,3 +1,7 @@
+// do keep in mind when reading this, we got to a point where we reached a certain amount of
+// technical debt where we kinda went wild and vaguely stopped caring about how clean things 
+// ended up being. Around the same time we started going insane. our code reflects it
+
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
@@ -26,9 +30,20 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::Write;
-use panic_probe as _;
+use panic_probe::{self as _, hard_fault};
 use static_cell::StaticCell;
 use crc::{Crc, Algorithm, CRC_16_IBM_SDLC, CRC_32_ISCSI};
+
+const CUSTOM_ALG: Algorithm<u8> = Algorithm {
+    width: 8,
+    poly: 0x07,
+    init: 0x00,
+    refin: false,
+    refout: false,
+    xorout: 0x00,
+    check: 0xf4,
+    residue: 0x00,
+};
 
 #[derive(PartialEq, Copy, Clone, Format)]
 enum LineCondition {
@@ -117,9 +132,10 @@ impl Packet {
             source: DEVICE_ADDRESS,
             destination,
             length: length as u8,
-            crc_flag: false,
+            crc_flag: true,
             message: message_holder,
-            trailer: TRAILER_NO_CRC,
+            // trailer: TRAILER_NO_CRC,
+            trailer: CRC.checksum(message),
         };
         let mut packet_holder = [0u8; 262];
         let packet_length = packet.to_u8_slice(&mut packet_holder);
@@ -168,7 +184,8 @@ const HALF_BIT_PERIOD_LOWER_TOLERANCE: Duration = Duration::from_micros(
 );
 //const TX_HALF_BIT_PERIOD: Duration = Duration::from_micros(493);
 const TX_HALF_BIT_PERIOD: Duration = HALF_BIT_PERIOD;
-const IDLE_CUTOFF: Duration = Duration::from_micros(1150);
+// const IDLE_CUTOFF: Duration = Duration::from_micros(1150);
+const IDLE_CUTOFF: Duration = Duration::from_micros(1250);
 const COLLISION_CUTOFF: Duration = Duration::from_micros(1110);
 
 const NULLS_COMMAND: &[u8] = b"\\nulls";
@@ -194,13 +211,14 @@ const ALAN_PAYLOAD_2: &[u8] = b"However, Alice disappears under mysterious circu
 
 static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 
+static CRC: Crc<u8> = Crc::<u8>::new(&CUSTOM_ALG);
 
 //Header Constants
 // Define constants
 const PREAMBLE: u8 = 0x55;
 const DEVICE_ADDRESS: u8 = 0x24;
 const BROADCAST_ADDRESS: u8 = 0xFF;
-const CRC_FLAG: u8 = 0;
+const CRC_FLAG: u8 = 0x01;
 const TRAILER_NO_CRC: u8 = 0xAA;
 
 bind_interrupts!(struct Irqs {
@@ -247,6 +265,7 @@ async fn main(spawner: Spawner) -> ! {
     let p = embassy_stm32::init(config); // this does high clock speed
                                          // let p = embassy_stm32::init(Default::default()); // this does low clock speed
                                          //info!("initialized clocks successfully!");
+
     let mut _onboard_led = Output::new(p.PA5, Level::Low, Speed::Low);
 
     let mut idle_led = Output::new(p.PB15, Level::Low, Speed::High).degrade();
@@ -522,12 +541,17 @@ async fn main(spawner: Spawner) -> ! {
 
         if length + 6 != bits_read / 8 {
             info!("Mismatched packet indicated length and bytes read... dropping packet");
+            println!("rx_buf: {:02x}", &rx_buf);
+            println!("preamble: {:#04x}", preamble);
+            println!("source: {:#04x}", source);
+            println!("destination: {:#04x}", destination);
+            println!("length: {}", length);
             continue;
         }
 
         let crc_flag = rx_buf[4];
         let message = &rx_buf[5..5+length];
-        let _crc = rx_buf[6+length];
+        let crc = rx_buf[5+length];
 
         // drop when
         // * wrong preamble
@@ -544,8 +568,25 @@ async fn main(spawner: Spawner) -> ! {
             continue;
         }
 
-        if crc_flag != CRC_FLAG {
-            warn!("Unckecked CRC field... continuing as if passed check");
+        match crc_flag {
+            CRC_FLAG => {
+                // check crc
+                if crc == CRC.checksum(message) { // this is the good timeline
+                    info!("CRC Matched");
+                } else { // this is the nightmare dimension
+                    info!("CRC Mismatch: Dropping Packet");
+                    println!("expected checksum: {:#04x}", CRC.checksum(message));
+                    println!("message checksum: {:#04x}", crc);
+                    continue;
+                }
+            },
+            0 => {
+                info!("CRC Flag not set: Not checking CRC");
+            },
+            _ => {
+                info!("Invalid CRC Flag: Dropping Packet");
+                continue;
+            }
         }
 
         info!(
@@ -590,7 +631,7 @@ async fn collision_handling_tx(
         let mut tx_buf = [0u8; 320];
         let (tx_packet, packet_length) = match &buf[..2] {
             b"\\\\" => Packet::new(0x1e, &buf[2..n]), // changes the receive address when packet starts with "\\". this is temporary for milestone 4
-            _ => Packet::new(DEVICE_ADDRESS, &buf[..n]),
+            _ => Packet::new(0x28, &buf[..n]),
         };
         tx_packet.to_u8_slice(&mut tx_buf);
 
