@@ -199,6 +199,7 @@ static STATE_SIGNAL: Signal<ThreadModeRawMutex, LineCondition> = Signal::new();
 // Define constants
 const PREAMBLE: u8 = 0x55;
 const DEVICE_ADDRESS: u8 = 0x24;
+const BROADCAST_ADDRESS: u8 = 0xFF;
 const CRC_FLAG: u8 = 0;
 const TRAILER_NO_CRC: u8 = 0xAA;
 
@@ -538,7 +539,7 @@ async fn main(spawner: Spawner) -> ! {
             continue;
         }
 
-        if destination != DEVICE_ADDRESS {
+        if destination != DEVICE_ADDRESS && destination != BROADCAST_ADDRESS {
             info!("Not our packet: Dropping");
             continue;
         }
