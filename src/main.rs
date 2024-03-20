@@ -88,24 +88,21 @@ struct Packet {
     trailer: u8,
 }
 
-// tx_bits: &BitSlice<u8, Msb0>,
 impl Packet {
-    fn new(destination: u8, message: &[u8]) -> (Self, usize) {
+    fn new(source: u8, destination: u8, message: &[u8]) -> (Self, usize) {
         let mut message_holder = [0u8; 255];
         let length = message.len().min(255);
         message_holder[0..length].copy_from_slice(&message[0..length]);
         let packet = Self {
             preamble: 0x55,
-            source: DEVICE_ADDRESS,
+            source: source,
             destination,
             length: length as u8,
             crc_flag: true,
             message: message_holder,
-            // trailer: TRAILER_NO_CRC,
             trailer: CRC.checksum(message),
         };
-        let mut packet_holder = [0u8; 262];
-        let packet_length = packet.to_u8_slice(&mut packet_holder);
+        let packet_length = packet.length as usize + 6;
         (packet, packet_length)
     }
         
@@ -573,9 +570,10 @@ async fn collision_handling_tx(
     loop {
         let n = reader.read(&mut buf).await;
         let mut tx_buf = [0u8; 320];
+        // TODO: I think this let should be removed completely / reworked to where the packet is generated
         let (tx_packet, packet_length) = match &buf[..2] {
-            b"\\\\" => Packet::new(0xff, &buf[2..n]), // changes the receive address when packet starts with "\\". this is temporary for milestone 4
-            _ => Packet::new(0xff, &buf[..n]),
+            b"\\\\" => Packet::new(DEVICE_ADDRESS, 0x1e, &buf[2..n]), // changes the receive address when packet starts with "\\". this is temporary for milestone 4
+            _ => Packet::new(DEVICE_ADDRESS, 0xff, &buf[..n]),
         };
         tx_packet.to_u8_slice(&mut tx_buf);
 
