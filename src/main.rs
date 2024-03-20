@@ -203,23 +203,6 @@ async fn main(spawner: Spawner) -> ! {
         config.rcc.sys = Sysclk::PLL1_P;
     }
 
-    // // STM32F411RE clock config (100 MHz)
-    // {
-    //     use embassy_stm32::rcc::*;
-    //     config.rcc.pll_src = PllSource::HSI;
-    //     config.rcc.pll = Some(Pll {
-    //         prediv: PllPreDiv::DIV16,
-    //         mul: PllMul::MUL400,
-    //         divp: Some(PllPDiv::DIV4),
-    //         divq: Some(PllQDiv::DIV4),
-    //         divr: Some(PllRDiv::DIV4),
-    //     });
-    //     config.rcc.sys = Sysclk::PLL1_P;
-    //     config.rcc.ahb_pre = AHBPrescaler::DIV1;
-    //     config.rcc.apb1_pre = APBPrescaler::DIV2;
-    //     config.rcc.apb2_pre = APBPrescaler::DIV1;
-    // }
-
     let p = embassy_stm32::init(config); // this does high clock speed
                                          // let p = embassy_stm32::init(Default::default()); // this does low clock speed
                                          //info!("initialized clocks successfully!");
