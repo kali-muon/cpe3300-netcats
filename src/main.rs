@@ -78,28 +78,26 @@ impl Edge {
     }
 }
 
-struct Packet {
+struct Packet<'a> {
     preamble: u8,
     source: u8,
     destination: u8,
     length: u8,
     crc_flag: bool,
-    message: [u8; 255],
+    message: &'a [u8],
     trailer: u8,
 }
 
-impl Packet {
+impl<'a> Packet<'a> {
     fn new(source: u8, destination: u8, message: &[u8]) -> (Self, usize) {
-        let mut message_holder = [0u8; 255];
         let length = message.len().min(255);
-        message_holder[0..length].copy_from_slice(&message[0..length]);
         let packet = Self {
             preamble: 0x55,
             source: source,
             destination,
             length: length as u8,
             crc_flag: true,
-            message: message_holder,
+            message: message,
             trailer: CRC.checksum(message),
         };
         let packet_length = packet.length as usize + 6;
