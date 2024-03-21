@@ -78,6 +78,12 @@ impl Edge {
     }
 }
 
+enum Error {
+    InvalidBool,
+    IncorrectPreamble,
+    CRCMismatch,
+}
+
 struct Packet<'a> {
     preamble: u8,
     source: u8,
@@ -89,7 +95,7 @@ struct Packet<'a> {
 }
 
 impl<'a> Packet<'a> {
-    fn new(source: u8, destination: u8, message: &[u8]) -> (Self, usize) {
+    fn new(source: u8, destination: u8, message: &'a [u8]) -> Self {
         let length = message.len().min(255);
         let packet = Self {
             preamble: 0x55,
@@ -100,8 +106,7 @@ impl<'a> Packet<'a> {
             message: message,
             trailer: CRC.checksum(message),
         };
-        let packet_length = packet.length as usize + 6;
-        (packet, packet_length)
+        packet
     }
         
     fn to_u8_slice(&self, slice: &mut [u8]) -> usize {
@@ -114,6 +119,39 @@ impl<'a> Packet<'a> {
         slice[5 + self.length as usize] = self.trailer;
 
         self.length as usize + 6 // 6 is the total number of bytes in the header and trailer
+    }
+
+    fn from_u8_slice(slice: &'a [u8]) -> Result<Self, Error> {
+        let length = slice[3];
+        let crc_flag = match slice[4] {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::InvalidBool),
+        };
+        let packet = Packet {
+            preamble: slice[0],
+            source: slice[1],
+            destination: slice[2],
+            length: length,
+            crc_flag: crc_flag,
+            message: &slice[5..5+length as usize],
+            trailer: slice[5+length as usize],
+        };
+
+        if packet.preamble != 0x55 {
+            return Err(Error::IncorrectPreamble)
+        }
+        if packet.crc_flag {
+            if packet.trailer != CRC.checksum(packet.message) {
+                return Err(Error::CRCMismatch)
+            } 
+        } else {
+            if packet.trailer != 0xAA {
+                return Err(Error::CRCMismatch)
+            }
+        }
+
+        Ok(packet)
     }
 }
 
@@ -470,69 +508,44 @@ async fn main(spawner: Spawner) -> ! {
         } // end of inner loop
 
         // lets parse
-        let preamble = rx_buf[0];
-        let source = rx_buf[1];
-        let destination = rx_buf[2];
-        let length = rx_buf[3] as usize;
-
-        if length + 6 != bits_read / 8 {
+        let packet = match Packet::from_u8_slice(&rx_buf) {
+            Ok(packet) => packet,
+            Err(error) => {
+                match error {
+                    Error::InvalidBool => info!("Invalid CRC Flag option... Dropping"),
+                    Error::IncorrectPreamble => info!("Incorrect Packet Preamble... Dropping"),
+                    Error::CRCMismatch => info!("CRC checksum does not match... Dropping"),
+                }
+                    
+                continue;
+            },
+        };
+            
+        if packet.length as usize + 6 != bits_read / 8 {
             info!("Mismatched packet indicated length and bytes read... dropping packet");
-            println!("rx_buf: {:02x}", &rx_buf);
-            println!("preamble: {:#04x}", preamble);
-            println!("source: {:#04x}", source);
-            println!("destination: {:#04x}", destination);
-            println!("length: {}", length);
+            //println!("rx_buf: {:02x}", &rx_buf);
+            //println!("preamble: {:#04x}", preamble);
+            //println!("source: {:#04x}", source);
+            //println!("destination: {:#04x}", destination);
+            //println!("length: {}", length);
             continue;
         }
-
-        let crc_flag = rx_buf[4];
-        let message = &rx_buf[5..5+length];
-        let crc = rx_buf[5+length];
 
         // drop when
         // * wrong preamble
         // * destination isn't us
         // * has a crc (for now)
 
-        if preamble != PREAMBLE {
-            info!("Incorrect Preamble: Dropping Packet");
+        if packet.destination != DEVICE_ADDRESS && packet.destination != BROADCAST_ADDRESS {
+            info!("Not our packet {:#04x}: Dropping", packet.destination);
             continue;
-        }
-
-        if destination != DEVICE_ADDRESS && destination != BROADCAST_ADDRESS {
-            info!("Not our packet {:#04x}: Dropping", destination);
-            continue;
-        }
-
-        match crc_flag {
-            CRC_FLAG => {
-                // check crc
-                if crc == CRC.checksum(message) { // this is the good timeline
-                    info!("CRC Matched");
-                } else { // this is the nightmare dimension
-                    info!("CRC Mismatch: Dropping Packet");
-                    println!("expected checksum: {:#04x}", CRC.checksum(message));
-                    println!("message checksum: {:#04x}", crc);
-                    continue;
-                }
-            },
-            0 => {
-                if crc != TRAILER_NO_CRC {
-                    continue;
-                }
-                //info!("CRC Flag not set: Not checking CRC");
-            },
-            _ => {
-                info!("Invalid CRC Flag: Dropping Packet");
-                continue;
-            }
         }
 
         info!(
             "message finished: {}",
-            core::str::from_utf8(message).unwrap()
+            core::str::from_utf8(packet.message).unwrap()
         );
-        info!("{:02x}", rx_buf[..6+length]);
+        info!("{:02x}", rx_buf[..6+packet.length as usize]);
 
         pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
         Timer::after_millis(100).await;
@@ -569,7 +582,7 @@ async fn collision_handling_tx(
         let n = reader.read(&mut buf).await;
         let mut tx_buf = [0u8; 320];
         // TODO: I think this let should be removed completely / reworked to where the packet is generated
-        let (tx_packet, packet_length) = match &buf[..2] {
+        let tx_packet = match &buf[..2] {
             b"\\\\" => Packet::new(DEVICE_ADDRESS, 0x1e, &buf[2..n]), // changes the receive address when packet starts with "\\". this is temporary for milestone 4
             _ => Packet::new(DEVICE_ADDRESS, 0xff, &buf[..n]),
         };
@@ -582,7 +595,7 @@ async fn collision_handling_tx(
         //info!("n = {}", n);
         // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
         // let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1 + n]);
-        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..packet_length]);
+        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..tx_packet.length as usize + 6]);
         //info!("received text");
         line_condition_wait_until(LineCondition::Idle).await;
         loop {
