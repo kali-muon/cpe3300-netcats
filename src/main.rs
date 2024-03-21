@@ -109,7 +109,7 @@ impl<'a> Packet<'a> {
         packet
     }
         
-    fn to_u8_slice(&self, slice: &mut [u8]) -> usize {
+    fn to_u8_slice(&self, slice: &mut [u8]) {
         slice[0] = self.preamble;
         slice[1] = self.source;
         slice[2] = self.destination;
@@ -117,7 +117,9 @@ impl<'a> Packet<'a> {
         slice[4] = self.crc_flag.into();
         slice[5..5 + self.length as usize].copy_from_slice(&self.message[0..self.length as usize]);
         slice[5 + self.length as usize] = self.trailer;
+    }
 
+    fn packet_size(&self) -> usize {
         self.length as usize + 6 // 6 is the total number of bytes in the header and trailer
     }
 
@@ -521,7 +523,7 @@ async fn main(spawner: Spawner) -> ! {
             },
         };
             
-        if packet.length as usize + 6 != bits_read / 8 {
+        if packet.packet_size() != bits_read / 8 {
             info!("Mismatched packet indicated length and bytes read... dropping packet");
             //println!("rx_buf: {:02x}", &rx_buf);
             //println!("preamble: {:#04x}", preamble);
@@ -545,7 +547,7 @@ async fn main(spawner: Spawner) -> ! {
             "message finished: {}",
             core::str::from_utf8(packet.message).unwrap()
         );
-        info!("{:02x}", rx_buf[..6+packet.length as usize]);
+        info!("{:02x}", rx_buf[..packet.packet_size()]);
 
         pwm.set_duty(embassy_stm32::timer::Channel::Ch1, max / 10);
         Timer::after_millis(100).await;
@@ -595,7 +597,7 @@ async fn collision_handling_tx(
         //info!("n = {}", n);
         // let word = core::str::from_utf8(&tx_buf[..n]).unwrap();
         // let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..1 + n]);
-        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..tx_packet.length as usize + 6]);
+        let tx_bits: &BitSlice<u8, Msb0> = BitSlice::from_slice(&tx_buf[..tx_packet.packet_size()]);
         //info!("received text");
         line_condition_wait_until(LineCondition::Idle).await;
         loop {
